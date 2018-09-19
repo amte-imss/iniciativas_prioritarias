@@ -43,6 +43,36 @@ define('LOCALE_LANGUAGE_NEGOTIATION_SESSION', 'locale-session');
 define('LOCALE_JS_STRING', '(?:(?:\'(?:\\\\\'|[^\'])*\'|"(?:\\\\"|[^"])*")(?:\s*\+\s*)?)+');
 
 /**
+ * Regular expression pattern used to match simple JS object literal.
+ *
+ * This pattern matches a basic JS object, but will fail on an object with
+ * nested objects. Used in JS file parsing for string arg processing.
+ */
+define('LOCALE_JS_OBJECT', '\{.*?\}');
+
+/**
+ * Regular expression to match an object containing a key 'context'.
+ *
+ * Pattern to match a JS object containing a 'context key' with a string value,
+ * which is captured. Will fail if there are nested objects.
+ */
+define('LOCALE_JS_OBJECT_CONTEXT', '
+  \{              # match object literal start
+  .*?             # match anything, non-greedy
+  (?:             # match a form of "context"
+    \'context\'
+    |
+    "context"
+    |
+    context
+  )
+  \s*:\s*         # match key-value separator ":"
+  (' . LOCALE_JS_STRING . ')  # match context string
+  .*?             # match anything, non-greedy
+  \}              # match end of object literal
+');
+
+/**
  * Translation import mode overwriting all existing translations
  * if new translated version available.
  */
@@ -111,7 +141,7 @@ function locale_language_from_browser($languages) {
   //   language-range  = ( ( 1*8ALPHA *( "-" 1*8ALPHA ) ) | "*" )
   // Samples: "hu, en-us;q=0.66, en;q=0.33", "hu,en-us;q=0.5"
   $browser_langcodes = array();
-  if (preg_match_all('@([a-zA-Z-]+|\*)(?:;q=([0-9.]+))?(?:$|\s*,\s*)@', trim($_SERVER['HTTP_ACCEPT_LANGUAGE']), $matches, PREG_SET_ORDER)) {
+  if (preg_match_all('@(?<=[, ]|^)([a-zA-Z-]+|\*)(?:;q=([0-9.]+))?(?:$|\s*,\s*)@', trim($_SERVER['HTTP_ACCEPT_LANGUAGE']), $matches, PREG_SET_ORDER)) {
     foreach ($matches as $match) {
       // We can safely use strtolower() here, tags are ASCII.
       // RFC2616 mandates that the decimal part is no more than three digits,
@@ -249,6 +279,12 @@ function locale_language_from_url($languages) {
       break;
 
     case LOCALE_LANGUAGE_NEGOTIATION_URL_DOMAIN:
+      // Get only the host, not the port.
+      $http_host= $_SERVER['HTTP_HOST'];
+      if (strpos($http_host, ':') !== FALSE) {
+        $http_host_tmp = explode(':', $http_host);
+        $http_host = current($http_host_tmp);
+      }
       foreach ($languages as $language) {
         // Skip check if the language doesn't have a domain.
         if ($language->domain) {
@@ -256,7 +292,7 @@ function locale_language_from_url($languages) {
           // Remove protocol and add http:// so parse_url works
           $host = 'http://' . str_replace(array('http://', 'https://'), '', $language->domain);
           $host = parse_url($host, PHP_URL_HOST);
-          if ($_SERVER['HTTP_HOST'] == $host) {
+          if ($http_host == $host) {
             $language_url = $language->language;
             break;
           }
@@ -362,7 +398,7 @@ function locale_language_switcher_session($type, $path) {
       $links[$langcode]['query'][$param] = $langcode;
     }
     else {
-      $links[$langcode]['attributes']['class'][] = ' session-active';
+      $links[$langcode]['attributes']['class'][] = 'session-active';
     }
   }
 
@@ -399,9 +435,48 @@ function locale_language_url_rewrite_url(&$path, &$options) {
     switch (variable_get('locale_language_negotiation_url_part', LOCALE_LANGUAGE_NEGOTIATION_URL_PREFIX)) {
       case LOCALE_LANGUAGE_NEGOTIATION_URL_DOMAIN:
         if ($options['language']->domain) {
+          // Save the original base URL. If it contains a port, we need to
+          // retain it below.
+          if (!empty($options['base_url'])) {
+            // The colon in the URL scheme messes up the port checking below.
+            $normalized_base_url = str_replace(array('https://', 'http://'), '', $options['base_url']);
+          }
+
           // Ask for an absolute URL with our modified base_url.
+          global $is_https;
+          $url_scheme = ($is_https) ? 'https://' : 'http://';
           $options['absolute'] = TRUE;
-          $options['base_url'] = $options['language']->domain;
+
+          // Take the domain without ports or protocols so we can apply the
+          // protocol needed. The setting might include a protocol.
+          // This is changed in Drupal 8 but we need to keep backwards
+          // compatibility for Drupal 7.
+          $host = 'http://' . str_replace(array('http://', 'https://'), '', $options['language']->domain);
+          $host = parse_url($host, PHP_URL_HOST);
+
+          // Apply the appropriate protocol to the URL.
+          $options['base_url'] = $url_scheme . $host;
+
+          // In case either the original base URL or the HTTP host contains a
+          // port, retain it.
+          $http_host = $_SERVER['HTTP_HOST'];
+          if (isset($normalized_base_url) && strpos($normalized_base_url, ':') !== FALSE) {
+            list($host, $port) = explode(':', $normalized_base_url);
+            $options['base_url'] .= ':' . $port;
+          }
+          elseif (strpos($http_host, ':') !== FALSE) {
+            list($host, $port) = explode(':', $http_host);
+            $options['base_url'] .= ':' . $port;
+          }
+
+          if (isset($options['https']) && variable_get('https', FALSE)) {
+            if ($options['https'] === TRUE) {
+              $options['base_url'] = str_replace('http://', 'https://', $options['base_url']);
+            }
+            elseif ($options['https'] === FALSE) {
+              $options['base_url'] = str_replace('https://', 'http://', $options['base_url']);
+            }
+          }
         }
         break;
 
@@ -468,6 +543,22 @@ function locale_language_url_rewrite_session(&$path, &$options) {
  * possible attack vector (img).
  */
 function locale_string_is_safe($string) {
+  // Some strings have tokens in them. For tokens in the first part of href or
+  // src HTML attributes, filter_xss() removes part of the token, the part
+  // before the first colon.  filter_xss() assumes it could be an attempt to
+  // inject javascript. When filter_xss() removes part of tokens, it causes the
+  // string to not be translatable when it should be translatable. See
+  // LocaleStringIsSafeTest::testLocaleStringIsSafe().
+  //
+  // We can recognize tokens since they are wrapped with brackets and are only
+  // composed of alphanumeric characters, colon, underscore, and dashes. We can
+  // be sure these strings are safe to strip out before the string is checked in
+  // filter_xss() because no dangerous javascript will match that pattern.
+  //
+  // @todo Do not strip out the token. Fix filter_xss() to not incorrectly
+  //   alter the string. https://www.drupal.org/node/2372127
+  $string = preg_replace('/\[[a-z0-9_-]+(:[a-z0-9_-]+)+\]/i', '', $string);
+
   return decode_entities($string) == decode_entities(filter_xss($string, array('a', 'abbr', 'acronym', 'address', 'b', 'bdo', 'big', 'blockquote', 'br', 'caption', 'cite', 'code', 'col', 'colgroup', 'dd', 'del', 'dfn', 'dl', 'dt', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'ins', 'kbd', 'li', 'ol', 'p', 'pre', 'q', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'tt', 'ul', 'var')));
 }
 
@@ -576,9 +667,6 @@ function locale_add_language($langcode, $name = NULL, $native = NULL, $direction
  *   translations).
  */
 function _locale_import_po($file, $langcode, $mode, $group = NULL) {
-  // Try to allocate enough time to parse and import the data.
-  drupal_set_time_limit(240);
-
   // Check if we have the language already in the database.
   if (!db_query("SELECT COUNT(language) FROM {languages} WHERE language = :language", array(':language' => $langcode))->fetchField()) {
     drupal_set_message(t('The language selected for import is not supported.'), 'error');
@@ -662,6 +750,12 @@ function _locale_import_read_po($op, $file, $mode = NULL, $lang = NULL, $group =
   $lineno = 0;
 
   while (!feof($fd)) {
+    // Refresh the time limit every 10 parsed rows to ensure there is always
+    // enough time to import the data for large PO files.
+    if (!($lineno % 10)) {
+      drupal_set_time_limit(30);
+    }
+
     // A line should not be longer than 10 * 1024.
     $line = fgets($fd, 10 * 1024);
 
@@ -948,22 +1042,13 @@ function _locale_import_one_string($op, $value = NULL, $mode = NULL, $lang = NUL
           // data untouched or if we don't have an existing plural formula.
           $header = _locale_import_parse_header($value['msgstr']);
 
-          // Get the plural formula and update in database.
+          // Get and store the plural formula if available.
           if (isset($header["Plural-Forms"]) && $p = _locale_import_parse_plural_forms($header["Plural-Forms"], $file->uri)) {
             list($nplurals, $plural) = $p;
             db_update('languages')
               ->fields(array(
                 'plurals' => $nplurals,
                 'formula' => $plural,
-              ))
-              ->condition('language', $lang)
-              ->execute();
-          }
-          else {
-            db_update('languages')
-              ->fields(array(
-                'plurals' => 0,
-                'formula' => '',
               ))
               ->condition('language', $lang)
               ->execute();
@@ -1447,6 +1532,9 @@ function _locale_parse_js_file($filepath) {
     [^\w]Drupal\s*\.\s*t\s*                       # match "Drupal.t" with whitespace
     \(\s*                                         # match "(" argument list start
     (' . LOCALE_JS_STRING . ')\s*                 # capture string argument
+    (?:,\s*' . LOCALE_JS_OBJECT . '\s*            # optionally capture str args
+      (?:,\s*' . LOCALE_JS_OBJECT_CONTEXT . '\s*) # optionally capture context
+    ?)?                                           # close optional args
     [,\)]                                         # match ")" or "," to finish
     ~sx', $file, $t_matches);
 
@@ -1474,54 +1562,72 @@ function _locale_parse_js_file($filepath) {
         (?:\s*\+\s*)?             # match "+" with possible whitespace, for str concat
       )+                          # match multiple because we supports concatenating strs
     )\s*                          # end capturing of plural string argument
+    (?:,\s*' . LOCALE_JS_OBJECT . '\s*          # optionally capture string args
+      (?:,\s*' . LOCALE_JS_OBJECT_CONTEXT . '\s*)?  # optionally capture context
+    )?
     [,\)]
     ~sx', $file, $plural_matches);
 
+  $matches = array();
 
-  // Loop through all matches and process them.
-  $all_matches = array_merge($plural_matches[1], $t_matches[1]);
-  foreach ($all_matches as $key => $string) {
-    $strings = array($string);
+  // Add strings from Drupal.t().
+  foreach ($t_matches[1] as $key => $string) {
+    $matches[] = array(
+      'string'  => $string,
+      'context' => $t_matches[2][$key],
+    );
+  }
+
+  // Add string from Drupal.formatPlural().
+  foreach ($plural_matches[1] as $key => $string) {
+    $matches[] = array(
+      'string'  => $string,
+      'context' => $plural_matches[3][$key],
+    );
 
     // If there is also a plural version of this string, add it to the strings array.
     if (isset($plural_matches[2][$key])) {
-      $strings[] = $plural_matches[2][$key];
+      $matches[] = array(
+        'string'  => $plural_matches[2][$key],
+        'context' => $plural_matches[3][$key],
+      );
     }
+  }
 
-    foreach ($strings as $key => $string) {
-      // Remove the quotes and string concatenations from the string.
-      $string = implode('', preg_split('~(?<!\\\\)[\'"]\s*\+\s*[\'"]~s', substr($string, 1, -1)));
+  foreach ($matches as $key => $match) {
+    // Remove the quotes and string concatenations from the string.
+    $string = implode('', preg_split('~(?<!\\\\)[\'"]\s*\+\s*[\'"]~s', substr($match['string'], 1, -1)));
+    $context = implode('', preg_split('~(?<!\\\\)[\'"]\s*\+\s*[\'"]~s', substr($match['context'], 1, -1)));
 
-      $source = db_query("SELECT lid, location FROM {locales_source} WHERE source = :source AND textgroup = 'default'", array(':source' => $string))->fetchObject();
-      if ($source) {
-        // We already have this source string and now have to add the location
-        // to the location column, if this file is not yet present in there.
-        $locations = preg_split('~\s*;\s*~', $source->location);
+    $source = db_query("SELECT lid, location FROM {locales_source} WHERE source = :source AND context = :context AND textgroup = 'default'", array(':source' => $string, ':context' => $context))->fetchObject();
+    if ($source) {
+      // We already have this source string and now have to add the location
+      // to the location column, if this file is not yet present in there.
+      $locations = preg_split('~\s*;\s*~', $source->location);
 
-        if (!in_array($filepath, $locations)) {
-          $locations[] = $filepath;
-          $locations = implode('; ', $locations);
+      if (!in_array($filepath, $locations)) {
+        $locations[] = $filepath;
+        $locations = implode('; ', $locations);
 
-          // Save the new locations string to the database.
-          db_update('locales_source')
-            ->fields(array(
-              'location' => $locations,
-            ))
-            ->condition('lid', $source->lid)
-            ->execute();
-        }
-      }
-      else {
-        // We don't have the source string yet, thus we insert it into the database.
-        db_insert('locales_source')
+        // Save the new locations string to the database.
+        db_update('locales_source')
           ->fields(array(
-            'location' => $filepath,
-            'source' => $string,
-            'context' => '',
-            'textgroup' => 'default',
+            'location' => $locations,
           ))
+          ->condition('lid', $source->lid)
           ->execute();
       }
+    }
+    else {
+      // We don't have the source string yet, thus we insert it into the database.
+      db_insert('locales_source')
+        ->fields(array(
+          'location' => $filepath,
+          'source' => $string,
+          'context' => $context,
+          'textgroup' => 'default',
+        ))
+        ->execute();
     }
   }
 }
@@ -1793,7 +1899,16 @@ function _locale_translate_seek() {
   }
 
   $sql_query = db_select('locales_source', 's');
-  $sql_query->leftJoin('locales_target', 't', 't.lid = s.lid');
+
+  $limit_language = NULL;
+  if ($query['language'] != 'en' && $query['language'] != 'all') {
+    $sql_query->leftJoin('locales_target', 't', "t.lid = s.lid AND t.language = :langcode", array(':langcode' => $query['language']));
+    $limit_language = $query['language'];
+  }
+  else {
+    $sql_query->leftJoin('locales_target', 't', 't.lid = s.lid');
+  }
+
   $sql_query->fields('s', array('source', 'location', 'context', 'lid', 'textgroup'));
   $sql_query->fields('t', array('translation', 'language'));
 
@@ -1820,12 +1935,6 @@ function _locale_translate_seek() {
       }
       $sql_query->condition($condition);
       break;
-  }
-
-  $limit_language = NULL;
-  if ($query['language'] != 'en' && $query['language'] != 'all') {
-    $sql_query->condition('language', $query['language']);
-    $limit_language = $query['language'];
   }
 
   // Add a condition on the text group.
@@ -1861,7 +1970,7 @@ function _locale_translate_seek() {
       $groups[$string['group']],
       array('data' => check_plain(truncate_utf8($string['source'], 150, FALSE, TRUE)) . '<br /><small>' . $string['location'] . '</small>'),
       $string['context'],
-      array('data' => _locale_translate_language_list($string['languages'], $limit_language), 'align' => 'center'),
+      array('data' => _locale_translate_language_list($string, $limit_language), 'align' => 'center'),
       array('data' => l(t('edit'), "admin/config/regional/translate/edit/$lid", array('query' => drupal_get_destination())), 'class' => array('nowrap')),
       array('data' => l(t('delete'), "admin/config/regional/translate/delete/$lid", array('query' => drupal_get_destination())), 'class' => array('nowrap')),
     );
@@ -1942,11 +2051,11 @@ function _locale_rebuild_js($langcode = NULL) {
 
   // Construct the array for JavaScript translations.
   // Only add strings with a translation to the translations array.
-  $result = db_query("SELECT s.lid, s.source, t.translation FROM {locales_source} s INNER JOIN {locales_target} t ON s.lid = t.lid AND t.language = :language WHERE s.location LIKE '%.js%' AND s.textgroup = :textgroup", array(':language' => $language->language, ':textgroup' => 'default'));
+  $result = db_query("SELECT s.lid, s.source, s.context, t.translation FROM {locales_source} s INNER JOIN {locales_target} t ON s.lid = t.lid AND t.language = :language WHERE s.location LIKE '%.js%' AND s.textgroup = :textgroup", array(':language' => $language->language, ':textgroup' => 'default'));
 
   $translations = array();
   foreach ($result as $data) {
-    $translations[$data->source] = $data->translation;
+    $translations[$data->context][$data->source] = $data->translation;
   }
 
   // Construct the JavaScript file, if there are translations.
@@ -2056,16 +2165,21 @@ function _locale_rebuild_js($langcode = NULL) {
 /**
  * List languages in search result table
  */
-function _locale_translate_language_list($translation, $limit_language) {
+function _locale_translate_language_list($string, $limit_language) {
   // Add CSS.
   drupal_add_css(drupal_get_path('module', 'locale') . '/locale.css');
 
+  // Include both translated and not yet translated target languages in the
+  // list. The source language is English for built-in strings and the default
+  // language for other strings.
   $languages = language_list();
-  unset($languages['en']);
+  $default = language_default();
+  $omit = $string['group'] == 'default' ? 'en' : $default->language;
+  unset($languages[$omit]);
   $output = '';
   foreach ($languages as $langcode => $language) {
     if (!$limit_language || $limit_language == $langcode) {
-      $output .= (!empty($translation[$langcode])) ? $langcode . ' ' : "<em class=\"locale-untranslated\">$langcode</em> ";
+      $output .= (!empty($string['languages'][$langcode])) ? $langcode . ' ' : "<em class=\"locale-untranslated\">$langcode</em> ";
     }
   }
 
@@ -2231,6 +2345,8 @@ function _locale_batch_build($files, $finished = NULL, $components = array()) {
 }
 
 /**
+ * Implements callback_batch_operation().
+ *
  * Perform interface translation import as a batch step.
  *
  * @param $filepath
@@ -2242,13 +2358,15 @@ function _locale_batch_import($filepath, &$context) {
   // The filename is either {langcode}.po or {prefix}.{langcode}.po, so
   // we can extract the language code to use for the import from the end.
   if (preg_match('!(/|\.)([^\./]+)\.po$!', $filepath, $langcode)) {
-    $file = (object) array('filename' => basename($filepath), 'uri' => $filepath);
+    $file = (object) array('filename' => drupal_basename($filepath), 'uri' => $filepath);
     _locale_import_read_po('db-store', $file, LOCALE_IMPORT_KEEP, $langcode[2]);
     $context['results'][] = $filepath;
   }
 }
 
 /**
+ * Implements callback_batch_finished().
+ *
  * Finished callback of system page locale import batch.
  * Inform the user of translation files imported.
  */
@@ -2259,6 +2377,8 @@ function _locale_batch_system_finished($success, $results) {
 }
 
 /**
+ * Implements callback_batch_finished().
+ *
  * Finished callback of language addition locale import batch.
  * Inform the user of translation files imported.
  */
