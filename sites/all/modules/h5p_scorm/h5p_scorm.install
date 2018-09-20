@@ -1,0 +1,131 @@
+<?php
+
+/**
+ * @file
+ * H5P Scorm install.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function h5p_scorm_schema() {
+  $schema['h5p_scorm_attempt'] = array(
+    'fields' => array(
+      'aid' => array(
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'nid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'uid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'delta' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 1,
+      ),
+      'completion_status' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'success_status' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'score' => array(
+        'type' => 'float',
+        'not null' => FALSE,
+        'default' => NULL,
+      ),
+      'total_time' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'cmi_data' => array(
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+        'default' => NULL,
+      ),
+      'activity_report' => array(
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+        'default' => NULL,
+      ),
+      'activity_objective' => array(
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+        'default' => NULL,
+      ),
+      'started' => array(
+        'description' => 'The Unix timestamp when the attempt was started.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'updated' => array(
+        'description' => 'The Unix timestamp when the attempt was updated.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+    'indexes' => array(
+      'nid_uid' => array('nid', 'uid'),
+    ),
+    'primary key' => array('aid'),
+  );
+
+  return $schema;
+}
+
+/**
+ * Create h5p_scorm_attempt table if not exists.
+ */
+function h5p_scorm_update_7001() {
+  if (!db_table_exists('h5p_scorm_attempt')) {
+    $schema = h5p_scorm_schema();
+    db_create_table('h5p_scorm_attempt', $schema['h5p_scorm_attempt']);
+  }
+}
+
+/**
+ * Recreate h5p_scorm_attempt table.
+ */
+function h5p_scorm_update_7002() {
+  if (db_table_exists('h5p_scorm_attempt')) {
+    db_drop_table('h5p_scorm_attempt');
+  }
+
+  $schema = h5p_scorm_schema();
+  db_create_table('h5p_scorm_attempt', $schema['h5p_scorm_attempt']);
+}
+
+/**
+ * Adding zip to whitelist.
+ */
+function h5p_scorm_update_7003() {
+  $whitelist = variable_get('h5p_whitelist', H5PCore::$defaultContentWhitelist);
+
+  if (strpos($whitelist, 'zip') === FALSE) {
+    variable_set('h5p_whitelist', $whitelist . ' zip');
+  }
+}

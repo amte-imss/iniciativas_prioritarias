@@ -1,0 +1,14 @@
+name = H5P SCORM
+description = "SCORM features for the H5P."
+project = "h5p"
+core = 7.x
+
+dependencies[] = h5p
+dependencies[] = h5peditor
+
+; Information added by Drupal.org packaging script on 2018-03-10
+version = "7.x-2.4"
+core = "7.x"
+project = "h5p_scorm"
+datestamp = "1520710384"
+

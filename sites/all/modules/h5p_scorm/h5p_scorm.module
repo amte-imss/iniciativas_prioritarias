@@ -1,0 +1,276 @@
+<?php
+
+/**
+ * @file
+ * H5P SCORM module.
+ */
+
+// Include files.
+require_once 'includes/h5p_scorm.inc';
+require_once 'includes/h5p_scorm_file.class.inc';
+
+define('H5P_SCORM_LIBRARY_MACHINE_NAME', 'H5P.Scorm');
+define('H5P_SCORM_H5P_CREATE_TYPE', 'create');
+define('H5P_SCORM_TYPE_TINCAN', 'tincan');
+define('H5P_SCORM_TYPE_SCORM', 'scorm');
+
+/**
+ * SCORM properties values.
+ */
+define('H5P_SCORM_COMPLETION_STATUS_COMPLETED', 'completed');
+define('H5P_SCORM_COMPLETION_STATUS_INCOMPLETE', 'incomplete');
+define('H5P_SCORM_SUCCESS_STATUS_PASSED', 'passed');
+define('H5P_SCORM_SUCCESS_STATUS_FAILED', 'failed');
+
+/**
+ * Implements hook_menu().
+ */
+function h5p_scorm_menu() {
+  $items = array();
+
+  $items['h5peditor/%/%/scorm'] = array(
+    'title' => 'H5P SCORM Files',
+    'page callback' => 'h5p_scorm_file_callback',
+    'page arguments' => array(1),
+    'access callback' => 'h5peditor_access',
+    'access arguments' => array(2),
+    'type' => MENU_CALLBACK,
+    'file' => 'includes/h5p_scorm.pages.inc',
+  );
+
+  $items['h5peditor/%/%/config'] = array(
+    'title' => 'H5P SCORM Config',
+    'page callback' => 'h5p_scorm_config_callback',
+    'page arguments' => array(1),
+    'access callback' => 'h5peditor_access',
+    'access arguments' => array(2),
+    'type' => MENU_CALLBACK,
+    'file' => 'includes/h5p_scorm.pages.inc',
+  );
+
+  $items['ajax/scorm/api/fetch/%h5p_scorm_attempt'] = array(
+    'page callback' => 'h5p_scorm_scorm_api_fetch_callback',
+    'page arguments' => array(4),
+    'access arguments' => array('access content'),
+    'delivery callback' => 'drupal_json_output',
+    'type' => MENU_CALLBACK,
+    'file' => 'includes/h5p_scorm.pages.inc',
+  );
+
+  $items['ajax/scorm/api/commit/%h5p_scorm_attempt'] = array(
+    'page callback' => 'h5p_scorm_scorm_api_commit_callback',
+    'page arguments' => array(4),
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+    'file' => 'includes/h5p_scorm.pages.inc',
+  );
+
+  $items['ajax/scorm/api/passed/%h5p_scorm_attempt'] = array(
+    'page callback' => 'h5p_scorm_scorm_api_passed_callback',
+    'page arguments' => array(4),
+    'access arguments' => array('access content'),
+    'delivery callback' => 'drupal_json_output',
+    'type' => MENU_CALLBACK,
+    'file' => 'includes/h5p_scorm.pages.inc',
+  );
+
+  $items['admin/config/system/h5p-scorm'] = array(
+    'title' => 'H5P Scorm',
+    'description' => 'Configure H5P Scorm.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('h5p_scorm_admin_settings'),
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_NORMAL_ITEM,
+    'file' => 'includes/h5p_scorm.admin.inc',
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_node_insert().
+ */
+function h5p_scorm_node_insert($node) {
+  if (!isset($node->json_content)) {
+    return;
+  }
+
+  $json_content = drupal_json_decode($node->json_content);
+
+  if (!isset($json_content['scorm'], $json_content['scorm']['extracted'], $json_content['scorm']['url'])) {
+    return;
+  }
+
+  $root_directory = file_stream_wrapper_get_instance_by_uri('public://')->getDirectoryPath();
+  $editor_directory =  $root_directory . DIRECTORY_SEPARATOR . 'h5peditor';
+  $file_info = pathinfo($json_content['scorm']['path']);
+  $extract_to = $editor_directory . DIRECTORY_SEPARATOR . $file_info['dirname'] . DIRECTORY_SEPARATOR . $file_info['filename'];
+
+  // Import (files are not extracted or extract dirs are different).
+  if (!file_exists($extract_to) || $extract_to != $json_content['scorm']['extracted']) {
+    $content_id = h5p_get_content_id($node);
+    $content_directory = $root_directory . DIRECTORY_SEPARATOR . variable_get('h5p_default_path', 'h5p') . DIRECTORY_SEPARATOR . 'content' . DIRECTORY_SEPARATOR . $content_id;
+
+    $instance = new ZipArchive();
+    $res = $instance->open($content_directory . DIRECTORY_SEPARATOR . $json_content['scorm']['path']);
+
+    // Extract zip from content directory and prepare SCORM info.
+    if ($res === TRUE) {
+      $instance->extractTo($extract_to);
+      $instance->close();
+
+      $json_content['scorm']['extracted'] = $extract_to;
+      $json_content['scorm']['url'] = _h5p_scorm_get_page_init_url($extract_to);
+      $json_content['scorm']['pages'] = _h5p_scorm_get_pages($extract_to);
+
+      $node->json_content = drupal_json_encode($json_content);
+
+      db_update('h5p_nodes')
+        ->fields(array(
+          'json_content' => $node->json_content,
+          // TODO: Possible to use json_content.
+          'filtered' => $node->json_content,
+        ))
+        ->condition('content_id', $content_id)
+        ->execute();
+    }
+  }
+}
+
+/**
+ * Implements hook_node_update().
+ */
+function h5p_scorm_node_update($node) {
+  if (!isset($node->json_content)) {
+    return;
+  }
+
+  $json_content_original = drupal_json_decode($node->original->json_content);
+  $json_content = drupal_json_decode($node->json_content);
+
+  if (!isset($json_content['scorm']['extracted'], $json_content_original['scorm']['extracted'])) {
+    return;
+  }
+
+  if ($json_content['scorm']['extracted'] != $json_content_original['scorm']['extracted']) {
+    db_delete('h5p_scorm_attempt')
+      ->condition('nid', $node->nid)
+      ->execute();
+  }
+}
+
+/**
+ * Implements hook_node_validate().
+ */
+function h5p_scorm_node_validate($node, $form, &$form_state) {
+  if ($node->type == 'h5p_content' && !empty($node->json_content)) {
+    $content = drupal_json_decode($node->json_content);
+
+    if (!empty($form_state['values']['h5p_library']) && stristr($form_state['values']['h5p_library'], H5P_SCORM_LIBRARY_MACHINE_NAME)) {
+      if (empty($content['scorm']) && $form_state['values']['h5p_type'] == H5P_SCORM_H5P_CREATE_TYPE) {
+        form_set_error('', t('Upload file is required.'));
+      }
+
+      if (!empty($content['scorm']['type']) && $content['scorm']['type'] == H5P_SCORM_TYPE_TINCAN) {
+        foreach (h5p_scorm_get_lrs_settings() as $config) {
+          if (empty($config)) {
+            form_set_error('', t('Please contact your system administrator for configuring the LRS settings. Scorm H5P type for Tin Can courses will not work without them.'));
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_node_prepare().
+ *
+ * @see h5p_scorm_h5p_filtered_params_alter().
+ */
+function h5p_scorm_node_prepare($node) {
+  if ($node->type == 'h5p_content' && isset($node->json_content)) {
+    $params = drupal_json_decode($node->json_content);
+
+    if (isset($params['scorm'])) {
+      $params['scorm']['nid'] = $node->nid;
+      $node->json_content = json_encode($params);
+      $node->filtered = json_encode($params);
+    }
+  }
+}
+
+/**
+ * Implements hook_node_load().
+ */
+function h5p_scorm_node_load($nodes, $types) {
+  foreach ($nodes as $node) {
+    if ($node->type == 'h5p_content' && isset($node->json_content)) {
+      $params = drupal_json_decode($node->json_content);
+
+      if (isset($params['scorm'])) {
+        $params['scorm']['nid'] = $node->nid;
+        $node->json_content = json_encode($params);
+        $node->filtered = json_encode($params);
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_h5p_filtered_params_alter().
+ */
+function h5p_scorm_h5p_filtered_params_alter($params) {
+  if (!empty($params->scorm->type)) {
+    $params->scorm->attempt_id = h5p_scorm_attempt_create($params->scorm->nid);
+
+    if ($params->scorm->type == H5P_SCORM_TYPE_TINCAN) {
+      $settings = h5p_scorm_get_tincan_configurations();
+
+      $params->scorm->params = (object) array(
+        'actor' => drupal_json_encode(h5p_scorm_get_actor($GLOBALS['user'])),
+        // TODO: It have to be related to user and content.
+        'registration' => NULL,
+        'endpoint' => $settings['endpoint'],
+        'auth' => $settings['auth'],
+      );
+
+      if (!empty($tincan = h5p_scorm_parse_tincan($params->scorm->extracted . DIRECTORY_SEPARATOR . 'tincan.xml')) && !empty($tincan->activity)) {
+        $params->scorm->params->activity_id = $tincan->activity;
+      }
+    }
+    elseif ($params->scorm->type == H5P_SCORM_TYPE_SCORM && $params->scorm->nid) {
+      if ($manifest = h5p_scorm_parse_imsmanifest($params->scorm->extracted . DIRECTORY_SEPARATOR . 'imsmanifest.xml')) {
+        // Get default organization.
+        $org = h5p_scorm_get_organization($manifest);
+
+        // Find the starting resource.
+        if ($item = h5p_scorm_start_resource($org->items, $params->scorm->nid)) {
+          $res = h5p_scorm_get_resource($manifest, $item->res_id);
+
+          if ($res && $res->href) {
+            $params->scorm->url = url($params->scorm->extracted . DIRECTORY_SEPARATOR . $res->href . $item->parms);
+          }
+
+          $params->scorm->params['itemId'] = $item->id;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Load attempt entry by its id.
+ *
+ * @param int $attempt_id
+ *   An attempt id.
+ *
+ * @return object
+ *   An attempt entry.
+ */
+function h5p_scorm_attempt_load($attempt_id) {
+  $query = db_select('h5p_scorm_attempt', 'a');
+  $query->fields('a');
+  $query->condition('a.aid', $attempt_id);
+
+  return $query->execute()->fetch();
+}
