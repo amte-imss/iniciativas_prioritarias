@@ -1,0 +1,1087 @@
+<?php
+/**
+ * @file
+ * Adds a theme function which allows theme developers to use the JW Player.
+ */
+
+define('JW_PLAYER_DEFAULT_PLAYLIST_SIZE', 200);
+define('JW_PLAYER_DEFAULT_PLAYLIST_POSITION', 'right');
+
+/**
+ * Implements hook_menu().
+ */
+function jw_player_menu() {
+  $items['admin/config/media/jw_player/settings'] = array(
+    'title' => 'Settings',
+    'description' => 'JW Player general settings',
+    'type' => MENU_LOCAL_TASK,
+    'access arguments' => array('administer JW Player presets'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('jw_player_settings_form'),
+    'file' => 'jw_player.admin.inc',
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function jw_player_permission() {
+  return array(
+    'administer JW Player presets' => array(
+      'title' => t('administer JW Player presets'),
+      'description' => t('Perform administration of JW Player presets'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_theme().
+ */
+function jw_player_theme() {
+  return array(
+    'jw_player' => array(
+      'variables' => array(
+        'file' => NULL,
+        'sources' => NULL,
+        'playlist' => NULL,
+        'preset' => '',
+        'image' => '',
+        'html_id' => NULL,
+        'options' => array(),
+        'playlist_size' => JW_PLAYER_DEFAULT_PLAYLIST_SIZE,
+        'playlist_position' => JW_PLAYER_DEFAULT_PLAYLIST_POSITION,
+      ),
+      'template' => 'theme/jw_player',
+    ),
+    'jw_player_sharing_sites_order' => array(
+      'render element' => 'element',
+      'file' => 'theme/jw_player.theme.inc',
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function jw_player_field_formatter_info() {
+  $formatters = array(
+    'jw_player' => array(
+      'label' => t('JW player'),
+      'field types' => array('file', 'video'),
+      'settings' => array(
+        'jwplayer_preset' => '',
+        'check_support' => FALSE,
+        'preview_image_field' => NULL,
+        'preview_image_style' => NULL,
+      ),
+    ),
+
+    'jw_player_playlist' => array(
+      'label' => t('JW player playlist'),
+      'field types' => array('file', 'video'),
+      'settings' => array(
+        'jwplayer_preset' => '',
+        'check_support' => FALSE,
+        'playlist_size' => JW_PLAYER_DEFAULT_PLAYLIST_SIZE,
+        'playlist_position' => JW_PLAYER_DEFAULT_PLAYLIST_POSITION,
+      ),
+    ),
+
+    'jw_player_sources' => array(
+      'label' => t('JW player sources'),
+      'field types' => array('file', 'video'),
+      'settings' => array(
+        'jwplayer_preset' => '',
+        'check_support' => FALSE,
+      ),
+    ),
+  );
+  return $formatters;
+}
+
+/**
+ * Implements hook_field_formatter_settings_form().
+ */
+function jw_player_field_formatter_settings_form($field, $instance, $view_mode, $form, &$form_state) {
+  $element = array();
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+  $presets = jw_player_preset_load();
+
+  // If there are presets prompt the user to select one or create another.
+  // If no, prompt to create a preset.
+  if (!empty($presets)) {
+    $options = array();
+    foreach (jw_player_preset_load() as $preset => $item) {
+      $options[$preset] = $item['preset_name'];
+    }
+
+    $element['jwplayer_preset'] = array(
+      '#title' => t('Select preset'),
+      '#type' => 'select',
+      '#default_value' => ($settings['jwplayer_preset']) ? $settings['jwplayer_preset'] : FALSE,
+      '#options' => $options,
+      '#ajax' => array(
+        'callback' => 'jw_player_preset_select_ajax_callback',
+        'wrapper' => 'jw-player-preset-links-wrapper',
+        'progress' => array(
+          'type' => 'throbber',
+          'message' => NULL,
+        ),
+      ),
+    );
+    $element['links'] = array(
+      '#theme' => 'links',
+      '#prefix' => '<div id="jw-player-preset-links-wrapper">',
+      '#suffix' => '</div>',
+      '#links' => array(
+        array(
+          'title' => t('Create new preset'),
+          'href' => 'admin/config/media/jw_player/add',
+        ),
+        array(
+          'title' => t('Manage presets'),
+          'href' => 'admin/config/media/jw_player',
+        ),
+      ),
+    );
+    if ($settings['jwplayer_preset']) {
+      $element['links']['#links'][] = array(
+        'title' => t('Manage selected preset'),
+        'href' => 'admin/config/media/jw_player/list/' . $settings['jwplayer_preset'] . '/edit',
+      );
+    }
+
+    // Add support for configurable preview images.
+    if (module_exists('image')) {
+      $options = array();
+      $bundle_fields = field_info_instances($instance['entity_type'], $instance['bundle']);
+      // @todo add support for fields on file references.
+
+      foreach ($bundle_fields as $field_name => $instance_info) {
+        $field_info = field_info_field($field_name);
+        if ($field_info['type'] == 'image') {
+          // Structure of the key can be used later on in the formatter's view
+          // callback in order to fetch the image uri from the configure field.
+          $options[$instance['entity_type'] . ':' . $instance['bundle'] . '|' . $field_name] = $instance_info['label'] . ' (' . $instance['entity_type'] . ':' . $instance['bundle'] . ')';
+        }
+      }
+
+      if ($options) {
+        asort($options);
+        $element['preview_image_field'] = array(
+          '#title' => t('Preview image source'),
+          '#description' => t('Select an image field on this entity, or on any entity connected through a reference field (entity/file/term).'),
+          '#type' => 'select',
+          '#options' => $options,
+          '#default_value' => $settings['preview_image_field'] ? $settings['preview_image_field'] : '',
+          '#empty_option' => t('None'),
+        );
+
+        $options = image_style_options();
+        $element['preview_image_style'] = array(
+          '#title' => t('Preview image style'),
+          '#description' => t('Choose an image style that will be used for the preview image.'),
+          '#type' => 'select',
+          '#options' => $options,
+          '#default_value' => $settings['preview_image_style'] ? $settings['preview_image_style'] : '',
+          '#states' => array(
+            'invisible' => array(
+              array(':input[name="fields[' . $field['field_name'] . '][settings_edit_form][settings][preview_image_field]"]' => array('value' => '')),
+            ),
+          ),
+        );
+      }
+    }
+  }
+  else {
+    $element['no_preset_message'] = array(
+      '#prefix' => '<div class="messages warning">',
+      '#markup' => t('No presets are available. Please <a href="@create">create a preset</a> in order to proceed.', array(
+        '@create' => url('admin/config/media/jw_player/add'),
+      )),
+      '#suffix' => '</div>',
+    );
+  }
+
+  if ($display['type'] == 'jw_player_playlist') {
+    $element['playlist_size'] = array(
+      '#title' => t('Playlist size'),
+      '#size' => 10,
+      '#field_suffix' => t('pixels'),
+      '#type' => 'textfield',
+      '#default_value' => ($settings['playlist_size']) ?  $settings['playlist_size'] : JW_PLAYER_DEFAULT_PLAYLIST_SIZE,
+    );
+
+    $element['playlist_position'] = array(
+      '#title' => t('Playlist position'),
+      '#type' => 'select',
+      '#options' => array('right' => 'right', 'bottom' => 'bottom', 'none' => 'none'),
+      '#default_value' => ($settings['playlist_position']) ?  $settings['playlist_position'] : JW_PLAYER_DEFAULT_PLAYLIST_POSITION,
+    );
+  }
+
+  if (!empty($presets)) {
+    $element['check_support'] = array(
+      '#title' => t('Check Media Support'),
+      '#description' => t('Enable verification of JW Player media support in formatted file. If the file does not contain supported media formats, no player is displayed.'),
+      '#type' => 'checkbox',
+      '#default_value' => !empty($settings['check_support']),
+    );
+  }
+
+  return $element;
+}
+
+/**
+ * Ajax callback to process preset select change.
+ *
+ * @param array $form
+ *   Array of the form from jw_player_field_formatter_settings_form.
+ * @param array $form_state
+ *   Array of the form state from jw_player_field_formatter_settings_form.
+ *
+ * @return array
+ *   Ajax commands to rebuild 'Manage selected preset' link.
+ */
+function jw_player_preset_select_ajax_callback($form, &$form_state) {
+  $commands = array();
+
+  // This approach is required on standard entity type "Manage display" pages.
+  if (isset($form_state['formatter_settings_edit'])) {
+    $field_name = $form_state['formatter_settings_edit'];
+    // Get $form_state values for the formatter settings.
+    $values = $form_state['values']['fields'][$field_name]['settings_edit_form']['settings'];
+    // Get the updated value for the preset field and build the new href.
+    $updated_preset = $values['jwplayer_preset'];
+    $updated_href = 'admin/config/media/jw_player/list/' . $updated_preset . '/edit';
+
+    // Get the fields used for formatter settings, and set the value of the links element.
+    $settings_fields = &$form['fields'][$field_name]['format']['settings_edit_form']['settings'];
+    $settings_fields['links']['#links'][2]['href'] = $updated_href;
+
+    // Set the links element output.
+    $output = $settings_fields['links'];
+  }
+  // This approach is required on File entities (audio, video, etc.)
+  else {
+    // Get the #parents of the triggering element.
+    $parents = $form_state['triggering_element']['#parents'];
+    // Get the updated value for the preset field and build the new href.
+    $updated_preset = drupal_array_get_nested_value($form_state['values'], $parents);
+    $updated_href = 'admin/config/media/jw_player/list/' . $updated_preset . '/edit';
+    $field_name = $parents[1];
+
+    // Get the #array_parents to be used for the form element to be rendered.
+    $array_parents = $form_state['triggering_element']['#array_parents'];
+    // Remove trigger element name from the end, and add the links destination.
+    array_pop($array_parents);
+    array_push($array_parents, 'links', '#links', 2, 'href');
+    // Set the value of the links form element.
+    drupal_array_set_nested_value($form, $array_parents, $updated_href);
+
+    // Set the links element output.
+    $output = $form['displays']['settings'][$field_name]['links'];
+  }
+
+  $commands[] = ajax_command_replace('#jw-player-preset-links-wrapper', render($output));
+  return array('#type' => 'ajax', '#commands' => $commands);
+}
+
+/**
+ * Implements hook_field_formatter_settings_summary().
+ */
+function jw_player_field_formatter_settings_summary($field, $instance, $view_mode) {
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+
+  $summary = array();
+  if (isset($settings['jwplayer_preset'])) {
+    $preset_settings = jw_player_preset_settings($settings['jwplayer_preset']);
+    // Formatted preset name and player type.
+    $summary[] = $preset_settings['name'];
+    if (isset($settings['player_type'])) {
+      $player = drupal_ucfirst($settings['player_type']);
+      $summary[] = t('Type: @player_type', array('@player_type' => $player));
+    }
+    if (stripos($preset_settings['source'], 'drupal') !== FALSE) {
+      // Skin, dimensions, enabled options, and sharing sites.
+      if (isset($preset_settings['skin'])) {
+        $summary[] = $preset_settings['skin'];
+      }
+      $summary[] = $preset_settings['dimensions'];
+      if (isset($preset_settings['enabled'])) {
+        $summary[] = $preset_settings['enabled'];
+      }
+      if (isset($preset_settings['sharing'])) {
+        $summary[] = $preset_settings['sharing'];
+      }
+    }
+    else {
+      $summary[] = $preset_settings['source'];
+    }
+    // Preview image settings.
+    if (isset($settings['preview_image_field']) && !empty($settings['preview_image_field'])) {
+      // Get image field label.
+      $split = explode('|', $settings['preview_image_field']);
+      $info = field_info_instance($instance['entity_type'], $split[1], $instance['bundle']);
+      // Get image style label.
+      if (!empty($settings['preview_image_style'])) {
+        $styles = image_styles();
+        $preview_image_style = $styles[$settings['preview_image_style']]['label'];
+      }
+      else {
+        $preview_image_style = 'Original';
+      }
+      $summary[] = t('Preview: @field (@style)', array(
+        '@field' =>  $info['label'],
+        '@style' =>  $preview_image_style,
+      ));
+    }
+  }
+  else {
+    $summary[] = t('No preset selected');
+  }
+
+  if ($display['type'] == 'jw_player_playlist') {
+    $playlist_size = $settings['playlist_size'] . 'px';
+    $summary[] = t('Playlist size: @val', array('@val' => $playlist_size));
+    $summary[] = t('Playlist position: @val', array('@val' => $settings['playlist_position']));
+  }
+
+  return implode('<br />', $summary);
+}
+
+/**
+ * Helper function to display JW Player preset settings.
+ *
+ * @param string $preset_machine_name
+ *   Value set of the preset's machine name.
+ *
+ * @return array
+ *   The preset settings stored in an array for rendering.
+ */
+function jw_player_preset_settings($preset_machine_name) {
+  $summary = array();
+  $presets = jw_player_preset_load();
+  if (!isset($presets[$preset_machine_name])) {
+    $summary['name'] = t('<strong>Error: "@name" preset cannot be found.</strong>', array(
+      '@name' => $preset_machine_name
+    ));
+    $summary['source'] = '';
+    return $summary;
+  }
+  else {
+    $preset = $presets[$preset_machine_name];
+  }
+  $preset_settings = $preset['settings'];
+  // Name and description.
+  $summary['name'] = t('Preset: @name', array('@name' => $preset['preset_name']));
+  if (!empty($preset['description'])) {
+    $summary['description'] = t('Description: @desc', array('@desc' => $preset['description']));
+  }
+  // Skin.
+  if (!isset($preset_settings['preset_source']) || $preset_settings['preset_source'] == 'drupal') {
+    $summary['source'] = t('Preset source: Drupal');
+    if (!empty($preset_settings['skin'])) {
+      $skin_label = drupal_ucfirst($preset_settings['skin']);
+      $summary['skin'] = t('Skin: @skin', array('@skin' => $skin_label));
+    }
+    // Dimensions and stretching.
+    switch ($preset_settings['stretching']) {
+      case 'exactfit': $stretch = 'exact fit'; break;
+      case 'uniform': $stretch = 'uniform'; break;
+      case 'fill': $stretch = 'fill'; break;
+      default: $stretch = ''; break;
+    }
+    if (!empty($stretch)) {
+      if (!empty($preset_settings['responsive'])) {
+        $summary['dimensions'] = t('Dimensions: @width% width (@aspect_ratio), @stretch', array(
+          '@width' => $preset_settings['width'],
+          '@aspect_ratio' => $preset_settings['aspectratio'],
+          '@stretch' => $stretch,
+        ));
+      }
+      else {
+        $summary['dimensions'] = t('Dimensions: @widthx@height, @stretch', array(
+          '@width' => $preset_settings['width'],
+          '@height' => $preset_settings['height'],
+          '@stretch' => $stretch,
+        ));
+      }
+    }
+    else {
+      if (!empty($preset_settings['responsive'])) {
+        $summary['dimensions'] = t('Dimensions: @width% width (@aspect_ratio)', array(
+          '@width' => $preset_settings['width'],
+          '@aspect_ratio' => $preset_settings['aspectratio'],
+        ));
+      }
+      else {
+        $summary['dimensions'] = t('Dimensions: @widthx@height', array(
+          '@width' => $preset_settings['width'],
+          '@height' => $preset_settings['height'],
+        ));
+      }
+    }
+    // Enabled options.
+    $enabled = array();
+    if ($preset_settings['autostart']) {
+      $enabled[] = t('Autostart');
+    }
+    if ($preset_settings['mute']) {
+      $enabled[] = t('Mute');
+    }
+    if ($preset_settings['controls']) {
+      $enabled[] = t('Controls');
+    }
+    if ($preset_settings['sharing']) {
+      $enabled[] = t('Sharing');
+    }
+    if (!empty($enabled)) {
+      $enabled_string = implode(', ', $enabled);
+      $summary['enabled'] = t('Enabled options: @enabled', array('@enabled' => $enabled_string));
+    }
+    // Sharing sites.
+    if (isset($preset_settings['sharing_sites_show'])) {
+      $sharing_sites = array_intersect_key(jw_player_sharing_sites(), array_filter($preset_settings['sharing_sites_show']));
+      if (!empty($sharing_sites)) {
+        $sharing_order = array_intersect_key($preset_settings['sharing_sites_order'], array_filter($preset_settings['sharing_sites_show']));
+        $sharing_weights = array();
+        foreach ($sharing_order as $key => $value) {
+          $sharing_weights[$key] = $value['weight'];
+        }
+        asort($sharing_weights);
+        $sharing_sorted = array_merge(array_flip(array_keys($sharing_weights)), $sharing_sites);
+        $sharing_sorted_string = implode(', ', $sharing_sorted);
+        $summary['sharing'] = t('Sharing sites: @sharing', array('@sharing' => $sharing_sorted_string));
+      }
+    }
+  }
+  else {
+    $summary['source'] = t('Preset source: JW Player');
+  }
+
+  return $summary;
+}
+
+/**
+ * Helper function to retrieve available JW Player sharing sites.
+ *
+ * @return array
+ *   Array of sharing site keys and formatted values.
+ */
+function jw_player_sharing_sites() {
+  return array(
+    'facebook' => t('Facebook'),
+    'twitter' => t('Twitter'),
+    'pinterest' => t('Pinterest'),
+    'email' => t('Email'),
+    'tumblr' => t('Tumblr'),
+    'googleplus' => t('Google Plus'),
+    'reddit' => t('Reddit'),
+    'linkedin' => t('LinkedIn'),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ */
+function jw_player_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $element = array();
+  // Exclude files without a supported media format (if enabled).
+  if (!empty($display['settings']['check_support'])) {
+    $items = array_filter($items, 'jw_player_supports');
+  }
+  // Support for transcoded videos in Video a field.
+  if ($field['type'] == 'video') {
+    foreach ($items as $delta => $item) {
+      if (!empty($file['playablefiles'])) {
+        $items[$delta] = reset($file['playablefiles']);
+      }
+    }
+  }
+
+  if ($display['type'] == 'jw_player') {
+    // Prepare preview image.
+    $image = NULL;
+    if ($display['settings']['preview_image_field']) {
+      $split = explode('|', $display['settings']['preview_image_field']);
+      $preview_image_field = $split[1];
+      $preview_image_entity_type = explode(':', $split[0]);
+
+      if ($preview_items = field_get_items($preview_image_entity_type[0], $entity, $preview_image_field)) {
+        $image = image_style_url($display['settings']['preview_image_style'], $preview_items[0]['uri']);
+      }
+    }
+
+    // Process files for the theme function.
+    foreach ($items as $delta => $item) {
+      // Give each instance of the player a unique id. The combination
+      // of fid and preset are considered to be save even in cases where
+      // the entire theme functions output is cached.
+      // Prefixing the id makes sure that the id does not start with a
+      // invalid numeric value.
+      $id = $item['fid'] . $display['settings']['jwplayer_preset'];
+      $element[$delta] = array(
+        '#theme' => 'jw_player',
+        '#file' => $item,
+        '#preset' => $display['settings']['jwplayer_preset'],
+        '#html_id' => drupal_html_id('jwplayer' . $id),
+      );
+
+      // Add preview image.
+      if ($image) {
+        $element[$delta]['#image'] = $image;
+      }
+    }
+  }
+
+  if ($display['type'] == 'jw_player_playlist') {
+    // Process files for the theme function.
+
+    $id = $items[0]['fid'] . $display['settings']['jwplayer_preset'];
+    $element = array(
+      '#theme' => 'jw_player',
+      '#playlist' => $items,
+      '#preset' => $display['settings']['jwplayer_preset'],
+      '#html_id' => drupal_html_id('jwplayer' . $id),
+      '#playlist_size' => $display['settings']['playlist_size'],
+      '#playlist_position' => $display['settings']['playlist_position'],
+    );
+  }
+
+  if ($display['type'] == 'jw_player_sources') {
+    // Process files for the theme function.
+    $id = $items[0]['fid'] . $display['settings']['jwplayer_preset'];
+    $element = array(
+      '#theme' => 'jw_player',
+      '#sources' => $items,
+      '#preset' => $display['settings']['jwplayer_preset'],
+      '#html_id' => drupal_html_id('jwplayer' . $id),
+    );
+
+    if ($images = field_get_items($entity_type, $entity, 'field_video_thumbnail')) {
+      $element['#image'] = $images[0];
+    }
+
+  }
+  return $element;
+}
+
+/**
+ * Retrieves information about JW Player skins.
+ *
+ * @param string $name
+ *   Name of skin for which information will be returned (optional).
+ *
+ * @return object|array
+ *   If $name is provided, will return the $file object. Otherwise if $name
+ *   is NULL, will return an array of $file objects.
+ */
+function jw_player_skins($name = NULL) {
+  $skins = &drupal_static(__FUNCTION__);
+
+  if (!isset($skins)) {
+    // Get custom JW Player skins stored in 'jwplayer_skins' directory.
+    $pattern = jw_player_use_legacy() ? '/\.xml|\.swf$/' : '/\.css$/';
+    $directory = libraries_get_path('jwplayer_skins');
+    $custom_skins = file_scan_directory($directory, $pattern);
+    foreach ($custom_skins as $key => $custom_skin) {
+      $custom_skins[$key]->skin_type = 'custom';
+    }
+
+    // Get JW Player 7 skins provided with self-hosted version.
+    $library_skins = array();
+    if (!jw_player_use_legacy() && variable_get('jw_player_hosting', 'self') == 'self') {
+      $directory = libraries_get_path('jwplayer');
+      $library_skins = file_scan_directory($directory . '/skins', $pattern);
+      foreach ($library_skins as $key => $library_skin) {
+        $library_skins[$key]->skin_type = 'library';
+      }
+    }
+    $skins = array_merge($library_skins, $custom_skins);
+  }
+
+  if ($name) {
+    foreach ($skins as $file) {
+      if ($file->name == $name) {
+        return $file;
+      }
+    }
+  }
+  // Sort skin array in alphabetical order.
+  asort($skins);
+  return $skins;
+}
+
+/**
+ * Implements hook_ctools_plugin_api().
+ */
+function jw_player_ctools_plugin_api($owner, $api) {
+  if ($owner == 'jw_player' && $api == 'jw_player_presets') {
+    return array('version' => 1);
+  }
+}
+
+/**
+ * Implements hook_ctools_plugin_directory().
+ */
+function jw_player_ctools_plugin_directory($module, $type) {
+  // Load the export_ui plugin.
+  if ($type =='export_ui') {
+    return 'plugins/export_ui';
+  }
+}
+
+/**
+ * Load the given preset(s).
+ * @param string $machine_name
+ * @return array
+ */
+function jw_player_preset_load($machine_name = NULL) {
+  ctools_include('export');
+  if (isset($machine_name)) {
+    $items = ctools_export_crud_load('jwplayer_preset', $machine_name);
+
+    // CTools returns an object, so we explicitly typecast it to array before
+    // returning.
+    return $items = (array) $items;
+  }
+  else {
+    $result = ctools_export_crud_load_all('jwplayer_preset');
+    $items = array();
+    if (!empty($result)) {
+      foreach ($result as $key => $item) {
+        $items[$key] = (array) $item;
+      }
+      return $items;
+    }
+  }
+  return $items;
+}
+
+/**
+ * Returns the default settings for JW Player. Used in cases where a preset is
+ * not provided when the JW Player theme function is called.
+ */
+function jw_player_default_settings() {
+  $defaults = &drupal_static(__FUNCTION__);
+
+  if (!isset($defaults)) {
+    $defaults = array(
+      'width' => '640',
+      'height' => '480',
+      'autostart' => FALSE,
+      'controlbar' => 'bottom',
+    );
+  }
+
+  return $defaults;
+}
+
+/**
+ * Process variables for jw_player.tpl.php.
+ *
+ * @todo this whole function seems obsolete. The config passed to jw player
+ *   should be prepared right where the theme function is called and passed
+ *   down to js using js settings in #attached within the render array. Along
+ *   width that, inline snippets in the template should be replaced by a
+ *   a behavior that initializes the players with the options from js settings.
+ */
+function template_preprocess_jw_player(&$variables) {
+  //In some instances an object is passed so convert to an array.
+  if(is_object($variables['file'])) {
+    $variables['file'] = (array) $variables['file'];
+  }
+
+  // Load defaults as the starting point.
+  $default_settings = jw_player_default_settings();
+
+  // Load preset if set.
+  $preset_settings = array();
+  if (!empty($variables['preset'])) {
+    $preset = jw_player_preset_load($variables['preset']);
+    // Additional check to ensure that the preset has actually loaded. This
+    // prevents problems where a preset has been deleted but a field is still
+    // configured to use it.
+    if (!empty($preset)) {
+      $preset_settings = $preset['settings'];
+      if (!empty($preset_settings['responsive'])) {
+        unset($preset_settings['height']);
+        $preset_settings['width'] = $preset_settings['width'] . '%';
+      }
+      else {
+        unset($preset_settings['aspectratio']);
+      }
+    }
+  }
+
+  // Get any preset override options that were sent through the formatter or
+  // theme call.
+  $options = array();
+  if (isset($variables['options'])) {
+    $options = $variables['options'];
+    unset($variables['options']);
+  }
+
+  // Merge all variables together. Preset settings take priority over defaults,
+  // variables passed directly to the theme function take priority over both.
+  $variables = array_merge($default_settings, $preset_settings, $options, $variables);
+
+  // The html_id should have been previously set. But we need to make
+  // sure we do have one.
+  if (!isset($variables['html_id'])) {
+    $id = $variables['file']['fid'] . $variables['preset'];
+    $variables['html_id'] = drupal_html_id('jwplayer' . $id);
+  }
+
+  // Check if there is one or multiple files. If one file then we set 'file', if
+  // there are multiple files we set 'levels'. Note that levels is used for both
+  // multiple video formats as well as for adaptive bitrates.
+  if (isset($variables['sources'])) {
+    $variables['config']['playlist'][0] = array();
+    $variables['config']['playlist'][0]['image'] = file_create_url($variables['image']['uri']);
+    foreach ($variables['sources'] as $key => $source) {
+      $variables['config']['playlist'][0]['sources'][$key]['file'] = file_create_url($source['uri']);
+      if (isset($source['getid3']) && $source['getid3']['width'] > 0 && $source['getid3']['height'] > 0) {
+        $variables['config']['playlist'][0]['sources'][$key]['width'] = $source['getid3']['width'];
+        $variables['config']['playlist'][0]['sources'][$key]['height'] = $source['getid3']['height'];
+      }
+      elseif (isset($source['field_width']) && isset($source['field_height'])) {
+        $variables['config']['playlist'][0]['sources'][$key]['width'] = $source['field_width'][LANGUAGE_NONE][0]['value'];
+        $variables['config']['playlist'][0]['sources'][$key]['height'] = $source['field_height'][LANGUAGE_NONE][0]['value'];
+      }
+    }
+  }
+
+  elseif (isset($variables['playlist'])) {
+    $variables['config']['playlist'] = array();
+    foreach ($variables['playlist'] as $key => $source) {
+      $variables['config']['playlist'][$key]['file'] = file_create_url($source['uri']);
+      $variables['config']['playlist'][$key]['image'] = 'none';
+      if (!empty($source['description'])) {
+        $variables['config']['playlist'][$key]['title'] = $source['description'];
+      }
+      else {
+        $pathinfo = pathinfo($source['uri']);
+        $variables['config']['playlist'][$key]['title'] = $pathinfo['filename'];
+      }
+    }
+
+    $variables['config']['listbar'] = array(
+      'position' => !empty($variables['playlist_position']) ? $variables['playlist_position'] : JW_PLAYER_DEFAULT_PLAYLIST_POSITION,
+      'size' => !empty($variables['playlist_size']) ? $variables['playlist_size'] : JW_PLAYER_DEFAULT_PLAYLIST_POSITION,
+    );
+  }
+
+  else {
+    $variables['config']['file'] = file_create_url($variables['file']['uri']);
+  }
+
+  if (jw_player_use_legacy()) {
+    // Resolve skin url.
+    $skin = !empty($variables['skin']) ? jw_player_skins($variables['skin']) : NULL;
+    $variables['skin'] = is_string($skin) ? file_create_url($skin->uri) : $variables['skin'];
+  }
+
+  // Outside of the cloud player check, has to work then as well.
+  if (!empty($variables['image'])) {
+    $variables['config']['image'] = $variables['image'];
+  }
+
+  // Don't apply preset config in case of cloud hosted players.
+  if (!variable_get('jw_player_cloud_player_default', FALSE)) {
+
+    // Copy player variables into their own array to be set as JavaScript
+    // configuration.
+    // @todo Bad smell here. Refactoring needed.
+
+    $config_variables = array(
+      'width',
+      'height',
+      'playlist.position',
+      'playlist.size',
+      'skin',
+      'stretching',
+      'aspectratio',
+    );
+    foreach ($config_variables as $key) {
+      if (!empty($variables[$key])) {
+        $variables['config'][$key] = $variables[$key];
+      }
+    }
+
+    if (isset($variables['autostart']) && $variables['autostart']) {
+      $variables['config']['autostart'] = 'true';
+    }
+
+    if (isset($variables['controls']) && !$variables['controls']) {
+      $variables['config']['controls'] = 'false';
+    }
+
+    // If the preset has the primary mode set, modify the modes array so that it
+    // comes first.
+    if (isset($variables['primary']) && $variables['primary'] == 'flash') {
+      $variables['config']['primary'] = 'flash';
+    }
+  }
+}
+
+/**
+ * Implements hook_process_HOOK().
+ */
+function jw_player_process_jw_player(&$variables) {
+  $variables['jw_player_inline_js_code'] = stripslashes(json_encode($variables['config']));
+  // Load the JW Player libraries (and integration into Drupal).
+  drupal_add_library('jw_player', 'jwplayer');
+}
+
+/**
+ * Implements hook_libraries_info()
+ */
+function jw_player_libraries_info() {
+  $libraries = array(
+    'jwplayer' => array(
+      'name' => 'JW Player',
+      'vendor url' => 'http://www.jwplayer.com/',
+      'download url' => 'http://www.jwplayer.com/download',
+      'files' => array(
+        'js' => array(
+          'jwplayer.js' => array('preprocess' => FALSE)
+        )
+      ),
+      'integration files' => array(
+        'jw_player' => array(
+          'js' => array('js/jw_player.seek.js')
+        ),
+      ),
+      'callbacks' => array(
+        'post-load' => array('jw_player_libraries_load'),
+      ),
+    ),
+  );
+
+  // Parse version from JS file for older versions.
+  if (jw_player_use_legacy()) {
+    $libraries['jwplayer']['version arguments'] = array(
+      'file' => 'jwplayer.js',
+      'pattern' => '/jwplayer.version="(.*?)"/',
+      'lines' => 1,
+    );
+  }
+  else {
+    // Version of JWPlayer 7 and above can't be parsed the same way anymore.
+    $libraries['jwplayer']['version'] = 7;
+  }
+
+  return $libraries;
+}
+
+/**
+ * Post-load callback for the jwplayer library.
+ *
+ * @see jw_player_libraries_info().
+ */
+function jw_player_libraries_load($library, $version, $variant) {
+  if ($key = jw_player_get_key()) {
+    drupal_add_js('jwplayer.key=' . drupal_json_encode((string) $key), array(
+      'type' => 'inline',
+      'scope' => 'header',
+      'weight' => 5
+    ));
+  }
+}
+
+/**
+ * Implements hook_library().
+ */
+function jw_player_library() {
+  $libraries = array();
+  $info = libraries_detect('jwplayer');
+  $libraries['jwplayer'] = array(
+    'title' => 'JW Player',
+    'website' => $info['vendor url'],
+    'version' => $info['installed'] ? $info['version'] : 'cloud-hosted',
+    'js' => array(),
+  );
+
+  if ($cloud_hosted_default = variable_get('jw_player_cloud_player_default', FALSE)) {
+    // Cloud hosted player, use external JavaScript.
+    $libraries['jwplayer']['js'][$cloud_hosted_default] = array(
+      'type' => 'external',
+    );
+  }
+  else if ($info['installed']) {
+    // Self hosted player, use files from library definition.
+    if (!empty($info['files']['js'])) {
+      foreach ($info['files']['js'] as $data => $option) {
+        if (is_numeric($data)) {
+          $option = "{$info['library path']}/{$option}";
+        }
+        else if (empty($option['type']) || $option['type'] == 'file') {
+          $data = "{$info['library path']}/{$data}";
+        }
+        $libraries['jwplayer']['js'][$data] = $option;
+      }
+    }
+  }
+
+  if ($key = jw_player_get_key()) {
+    $libraries['jwplayer']['js']['jwplayer.key=' . drupal_json_encode((string) $key)] = array(
+      'type' => 'inline',
+      'scope' => 'header',
+      'weight' => 5
+    );
+  }
+  // Use integration files from library definition.
+  foreach ($info['integration files'] as $module => $files) {
+    foreach (array_keys($files) as $type) {
+      $module_path = drupal_get_path('module', $module);
+      foreach ($files[$type] as $data => $option) {
+        if (is_numeric($data)) {
+          $option = "{$module_path}/{$option}";
+        }
+        else if (empty($option['type']) || $option['type'] == 'file') {
+          $data = "{$module_path}/{$data}";
+        }
+        $libraries['jwplayer'][$type][$data] = $option;
+      }
+    }
+  }
+  return $libraries;
+}
+
+/**
+ * Retrieves all available preset plugins.
+ */
+function jw_player_preset_plugins($name = NULL) {
+  $plugins = &drupal_static(__FUNCTION__);
+
+  if (!isset($plugins)) {
+    $plugins = module_invoke_all('jw_player_plugin_info');
+    // Allow modules to alter other modules' plugin definitions
+    drupal_alter('jw_player_plugin_info', $plugins);
+  }
+
+  if ($name && isset($plugins[$name])) {
+    return $plugins[$name];
+  }
+
+  return $plugins;
+}
+
+/**
+ * Returns a list of mime types supported by JW player.
+ *
+ * @return array
+ *   A list of mime types, as an array of strings.
+ */
+function jw_player_supported_mimetypes() {
+  $types = &drupal_static(__FUNCTION__);
+  if (!$types) {
+    $types = array(
+      // Container format listed on http://www.longtailvideo.com/support/jw-player/28836/media-format-support
+      // MP4 (video)
+      'video/mp4',
+      // FLV (video)
+      'video/flv',
+      // WebM (video)
+      'video/webm',
+      // AAC (audio)
+      'audio/aac', 'audio/aacp', 'audio/3gpp', 'audio/3gpp2', 'audio/mp4', 'audio/MP4A-LATM', 'audio/mpeg4-generic',
+      // MP3 (audio)
+      'audio/mpeg', 'audio/MPA', 'audio/mpa-robust',
+      // Other container formats.
+      // Vorbis (video)
+      'video/ogg',
+      // Quicktime (video)
+      'video/quicktime',
+      // Matroska (audio and video)
+      'video/x-matroska', 'audio/x-matroska',
+      // WebM (audio)
+      'audio/webm',
+      // Vorbis (audio)
+      'audio/ogg',
+    );
+    drupal_alter('jw_player_supported_mimetypes', $types);
+  }
+  return $types;
+}
+
+/**
+ * Checks a file for JW Player supported media formats.
+ *
+ * See http://www.longtailvideo.com/support/jw-player/28836/media-format-support
+ * for the list of supported media formats.
+ *
+ * @param array|object $file
+ *   A file object (or array) to check for support.
+ *
+ * @return bool
+ *   TRUE if the file is supported by JW Player.
+ */
+function jw_player_supports($file) {
+  $file = (object)$file;
+  if (in_array($file->filemime, jw_player_supported_mimetypes())) {
+    //Loads on-behalf implementations from checks/ directory.
+    $path = drupal_get_path('module', 'jw_player') . '/checks';
+    $files = drupal_system_listing('/.*\.inc$/', $path, 'name', 0);
+    foreach ($files as $check_file) {
+      if (strstr($check_file->uri, '/checks/') && module_exists($check_file->name)) {
+        require_once(DRUPAL_ROOT . '/' . $check_file->uri);
+      }
+    }
+    if ($check_modules = module_implements('jw_player_supports')) {
+      // Return TRUE as soon as an implementation of hook_jw_player_supports()
+      // returns TRUE.
+      foreach ($check_modules as $module) {
+        if (module_invoke($module, 'jw_player_supports', $file)) {
+          return TRUE;
+        }
+      }
+      // Return FALSE if no implementation of hook_jw_player_supports() returned
+      // TRUE.
+      return FALSE;
+    }
+    else {
+      // Return TRUE if no module implements hook_jw_player_supports().
+      return TRUE;
+    }
+  }
+  else {
+    return FALSE;
+  }
+}
+
+/**
+ * Checks whether a legacy version is configured.
+ *
+ * @return bool
+ *   TRUE if any version older than 7 is used, FALSE otherwise.
+ */
+function jw_player_use_legacy() {
+  return variable_get('jw_player_version') < 7;
+}
+
+/**
+ * Gets the correct key for the corresponding JW Player version.
+ *
+ * @return string
+ *   The license key as entered in the UI.
+ */
+function jw_player_get_key() {
+  return jw_player_use_legacy() ? variable_get('jw_player_key', NULL) : variable_get('jw_player_key_7', NULL);
+}
+
+/**
+ * Return regex to check JW Player library URL format.
+ *
+ * @return string
+ *   The regex string as defined in the function.
+ */
+function jw_player_library_url_regex() {
+  return '/^(https?:|)?\/\/content\.jwplatform\.com\/libraries\/([a-zA-Z0-9]*)\.js$/i';
+}

@@ -1,0 +1,167 @@
+<?php
+/**
+ * @file
+ * Install, update and uninstall functions for the JW Player module.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function jw_player_schema() {
+  $schema['jwplayer_preset'] = array(
+    'description' => 'Stores information of JW Player presets',
+    'export' => array(
+      'key' => 'machine_name',
+      'identifier' => 'jw_player_preset',
+      'default hook' => 'default_jw_player_presets', // Function hook name
+      'api' => array(
+        'owner' => 'jw_player',
+        'api' => 'jw_player_presets', // Base name for api include files.
+        'minimum_version' => 1,
+        'current_version' => 1,
+      ),
+    ),
+    'fields' => array(
+      'preset_name' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'description' => 'Name for the preset.'
+      ),
+      'machine_name' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'description' => 'Unique machine name for every configuration preset.',
+        'not null' => TRUE,
+      ),
+      'description' => array(
+          'description' => "Provide text summary for the preset",
+          'type' => 'text',
+      ),
+      'settings' => array(
+        'description' => 'Serialized settings array of a given preset.',
+        'type' => 'blob',
+        'size' => 'big',
+        'not null' => FALSE,
+        'serialize' => TRUE,
+      ),
+    ),
+    'unique keys' => array(
+    'machine_name' => array('machine_name'),
+    ),
+    'primary key' => array('machine_name'),
+  );
+
+  return $schema;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function jw_player_uninstall() {
+  // Delete variables.
+  variable_del('jw_player_version');
+  variable_del('jw_player_hosting');
+  variable_del('jw_player_key');
+  variable_del('jw_player_key_7');
+  variable_del('jw_player_cloud_player_default');
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function jw_player_requirements($phase) {
+  $requirements = array();
+
+  // Ensure translations don't break at install time
+  $t = get_t();
+
+  $requirements['jw_player'] = array(
+    'title' => $t('JW Player'),
+    'severity' => REQUIREMENT_OK,
+  );
+
+  // Player could be cloud-hosted so no reason to check in other phases.
+  if ($phase === 'runtime') {
+    if ($account_token = variable_get('jw_player_cloud_player_default', FALSE)) {
+      // Cloud-hosted is a priority over self-hosted.
+      $requirements['jw_player']['value'] = t('Cloud-Hosted');
+    }
+    else {
+      $info = libraries_detect('jwplayer');
+      if ($info['installed']) {
+        $value = t('Self-Hosted') . " (v{$info['version']})";
+        if (!($key = jw_player_get_key())) {
+          $requirements['jw_player']['severity'] = REQUIREMENT_ERROR;
+          $requirements['jw_player']['description'] = t('Please configure your Self-Hosted Player License Key from the <a href="@url">JW Player settings page</a>.', array(
+            '@url' => url('admin/config/media/jw_player/settings'),
+          ));
+        }
+      }
+      else {
+        $value = t('Not found');
+        $requirements['jw_player']['description'] = t('Please consult README.txt for installation instructions.');
+        $requirements['jw_player']['severity'] = REQUIREMENT_ERROR;
+      }
+      $requirements['jw_player']['value'] = $value;
+    }
+  }
+
+  return $requirements;
+}
+
+/**
+ * Set jw player version to 5, display message.
+ */
+function jw_player_update_7000() {
+  variable_set('jw_player_version', 5);
+  drupal_set_message(t('JW Player version has been set to 5.'));
+}
+
+/**
+ * Drop out dated integration for cloud hosted players and notify user.
+ */
+function jw_player_update_7001() {
+  if (variable_get('jw_player_account_token', FALSE)) {
+    drupal_set_message(t('JW Player has changed its way to run cloud hosted players. Please update your configuration at /admin/config/media/jw_player/settings if you are using a cloud hosted player.'));
+    variable_del('jw_player_account_token');
+  }
+  variable_set('jw_player_version', 6);
+  drupal_set_message(t('JW Player version has been set to 6.'));
+}
+
+/**
+ * Ensure that the {jwplayer_preset}.machine_name column does not allow NULL.
+ */
+function jw_player_update_7002() {
+  db_change_field('jwplayer_preset', 'machine_name', 'machine_name', array(
+    'type' => 'varchar',
+    'length' => 255,
+    'description' => 'Unique machine name for every configuration preset.',
+    'not null' => TRUE,
+  ));
+}
+
+/**
+ * Set JW Player hosting based on currently saved keys and URLs.
+ */
+function jw_player_update_7003() {
+  // If a license key has been entered, we assume this is self-hosting.
+  if (variable_get('jw_player_key', FALSE) || variable_get('jw_player_key_7', FALSE)) {
+    variable_set('jw_player_hosting', 'self');
+    variable_set('jw_player_cloud_player_default', '');
+    drupal_set_message(t('JW Player hosting has been set to Self-Hosting, and any saved cloud-hosting URL removed.'));
+  }
+  // If no keys and there is a cloud URL, assume this is cloud-hosting.
+  else if (variable_get('jw_player_cloud_player_default', FALSE)) {
+    variable_set('jw_player_hosting', 'cloud');
+    variable_set('jw_player_key', '');
+    variable_set('jw_player_key_7', '');
+    drupal_set_message(t('JW Player hosting has been set to Cloud-Hosting, and any saved self-hosting license keys removed.'));
+  }
+  // If neither is set and there is a player version (module is
+  // not a new installation), set default value to self-hosting.
+  else if(variable_get('jw_player_version', FALSE)) {
+    variable_set('jw_player_hosting', 'self');
+    drupal_set_message(t('JW Player hosting has been set by default to Self-Hosting.'));
+  }
+}
