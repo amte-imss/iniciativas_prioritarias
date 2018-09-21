@@ -1,0 +1,240 @@
+<?php
+
+/**
+ * @file
+ * A Tin Can API module to implement the LL SDK.
+ *
+ * @author matvp
+ */
+
+/**
+ * Implements hook_init().
+ */
+function tincanapi_sdk_init() {
+
+  global $base_url;
+
+  $node_url = $_GET['q'];
+  $path = request_path();
+
+  tincanapi_sdk_add_custom_alias($path, $node_url);
+
+  drupal_add_js(
+    array(
+      'tincanapi' => array(
+        'modalPage' => $base_url . '/' . current_path(),
+      ),
+    ),
+    'setting'
+  );
+}
+
+/**
+ * Add a custom path and alias for a page. The SDK then uses the aliases array to resolve paths with their node path.
+ *
+ * @param string $path
+ *   The alias path of the page, often the return value of request_path().
+ * @param string $node_url
+ *   The real node URL, often used in the q GET parameter.
+ */
+function tincanapi_sdk_add_custom_alias($path, $node_url) {
+
+  global $base_url;
+
+  drupal_add_js(
+    array(
+      'tincanapi' => array(
+        'aliases' => array($base_url . '/' . $path => $base_url . '/' . $node_url),
+      ),
+    ),
+    'setting'
+  );
+}
+
+/**
+ * Adds a path to the trackable list.
+ *
+ * @param string $path
+ *   The path to be tracked.
+ */
+function tincanapi_sdk_add_trackable_path($path) {
+
+  global $base_url;
+
+  drupal_add_js(
+    array(
+      'tincanapi' => array(
+        'trackable' => array($base_url . '/' . $path => 1),
+      ),
+    ), 'setting'
+  );
+}
+
+/**
+ * Implements hook_preprocess_page().
+ */
+function tincanapi_sdk_preprocess_page(&$variables) {
+
+  global $base_url;
+
+  drupal_add_js(
+    array(
+      'tincanapi' => array(
+        'modalPage' => $base_url . '/' . current_path(),
+      ),
+    ),
+    'setting'
+  );
+}
+
+/**
+ * Implements hook_js_alter().
+ */
+function tincanapi_sdk_js_alter(&$javascript) {
+
+  /*
+   * drupal_get_js() gets called twice, probably because a module uses drupal_add_js() and re-invokes $variables['scripts'] = drupal_get_js().
+   */
+  static $tincanapi_sdk_installed;
+
+  if ($tincanapi_sdk_installed) {
+    return;
+  }
+
+  // If page is admin.
+  if (path_is_admin(current_path())) {
+    return;
+  }
+
+  // If no endpoint is set, abort.
+  $tincan_endpoint = variable_get('tincanapi_endpoint');
+  if (!$tincan_endpoint) {
+    return;
+  }
+
+  // Load tincanapi_sdk.js manually because we'd like to give a weight to this.
+  $js_placement = [
+    'weight' => 1336,
+    'group' => JS_THEME,
+  ];
+
+  $module_path = drupal_get_path('module', 'tincanapi_sdk');
+  drupal_add_js($module_path . '/js/tincanapi_sdk.js', $js_placement);
+
+  // For debug purposes, it's better to load the remote JS SDK.
+  $load_tincan_sdk_remotely = FALSE;
+
+  if (!$load_tincan_sdk_remotely) {
+    // Load local SDK.
+    tincansdk_load_js_local($module_path);
+  }
+  else {
+    // Include the remote JS.
+    tincansdk_load_js_remotely($tincan_endpoint);
+  }
+
+  tincanapi_sdk_config();
+
+  $tincanapi_sdk_installed = TRUE;
+}
+
+/**
+ * Loads the SDK locally.
+ */
+function tincansdk_load_js_local($module_path) {
+
+  drupal_add_js($module_path . '/js/tincansdk.js');
+}
+
+/**
+ * Loads the SDK remotely. This is not used in the Drupal version but kept for debug purposes.
+ *
+ * @param string $tincan_endpoint
+ *   The endpoint given as config variable.
+ */
+function tincansdk_load_js_remotely($tincan_endpoint) {
+
+  $tincan_base = '';
+  if (filter_var($tincan_endpoint, FILTER_VALIDATE_URL)) {
+    $parts = parse_url($tincan_endpoint);
+
+    $scheme = isset($parts['scheme']) ? $parts['scheme'] . '://' : '';
+    $host   = isset($parts['host']) ? $parts['host'] : '';
+    $port   = isset($parts['port']) ? ':' . $parts['port'] : '';
+
+    $tincan_base = "$scheme$host$port";
+  }
+
+  if (!trim($tincan_base)) {
+    return;
+  }
+
+  drupal_add_js($tincan_base . '/packages/iminds/tincansdk/dist/tincansdk.js');
+}
+
+/**
+ * Sets the javascript SDK config file.
+ */
+function tincanapi_sdk_config() {
+
+  $config = implode(
+        '',
+        [
+          'window.tincanAsyncInit = function () {',
+          'TINCAN.init({',
+          'strict_endpoint: Drupal.settings.basePath + "ajax/tincanapi/track_statement"',
+          '});',
+
+        // Provide a current timestamp.
+          'TINCAN.setOption("timestamp", "' . date('Y-m-d\TH:i:s.uP') . '");',
+
+        // Page should not be tracked, disable the initial statement.
+          'TINCAN.disablePage();',
+          'TINCAN.disableVideo();',
+
+        // Enable or disable logging.
+          'TINCAN.setOption("log", true);',
+          'TINCAN.setOption("track_exits", true);',
+          'TINCAN.setOption("actor", "hidden");',
+          '};',
+        ]
+    );
+
+  drupal_add_js($config, 'inline');
+}
+
+/**
+ * Implements hook_menu().
+ */
+function tincanapi_sdk_menu() {
+
+  $items = [];
+
+  $items['ajax/tincanapi/track_statement'] = array(
+    'title' => 'Tin Can SDK API',
+    'description' => 'AJAX callback to track Tin Can API events from the SDK.',
+    'type' => MENU_CALLBACK,
+    'page callback' => 'tincanapi_sdk_ajax_callback',
+    'access arguments' => array('access content'),
+  );
+
+  return $items;
+}
+
+/**
+ * The entry of the ajax call.
+ */
+function tincanapi_sdk_ajax_callback() {
+
+  $data = @json_decode(@file_get_contents("php://input"), TRUE);
+  if (!is_array($data)) {
+    return;
+  }
+
+  $context = [];
+  $context['is_ajax'] = 1;
+
+  tincanapi_track_data($data, $context);
+
+  drupal_exit();
+}

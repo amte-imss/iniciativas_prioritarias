@@ -1,0 +1,22 @@
+<?php
+
+/**
+ * @file
+ * Install and uninstall functions for the Tin Can API (Content Types) module.
+ */
+
+/**
+ * Implements hook_install().
+ */
+function tincanapi_content_types_install() {
+  variable_set('tincanapi_content_types', array());
+  variable_set('tincanapi_view_modes', array());
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function tincanapi_content_types_uninstall() {
+  variable_del('tincanapi_content_types');
+  variable_del('tincanapi_view_modes');
+}

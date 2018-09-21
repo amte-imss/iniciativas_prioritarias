@@ -1,0 +1,62 @@
+<?php
+
+/**
+ * @file
+ * A Tin Can API module to handle link tracking.
+ */
+
+/**
+ * Implements hook_page_build().
+ */
+function tincanapi_links_page_build(&$page) {
+
+  $settings = array(
+    'external' => !!variable_get('tincanapi_links_external'),
+  );
+
+  drupal_add_js(
+        array(
+          'tincanapi' => array(
+            'links' => $settings,
+          ),
+        ), 'setting'
+    );
+
+  $module_path = drupal_get_path('module', 'tincanapi_links');
+  drupal_add_js($module_path . '/js/tincanapi_links.js');
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function tincanapi_links_form_tincanapi_admin_form_alter(&$form, &$form_state, $form_id) {
+
+  $form['links'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Link Settings'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  );
+
+  $form['links']['tincanapi_links_external'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Track external links.'),
+    '#default_value' => variable_get('tincanapi_links_external'),
+  );
+}
+
+/**
+ * Adds a link to the trackable list.
+ */
+function _tincanapi_links_add_trackable_url($url, $type) {
+  $links = array();
+  $links['trackable_' . $type] = array($url);
+
+  drupal_add_js(
+        array(
+          'tincanapi' => array(
+            'links' => $links,
+          ),
+        ), 'setting'
+    );
+}

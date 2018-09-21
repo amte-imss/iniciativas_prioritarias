@@ -1,0 +1,14 @@
+<?php
+
+/**
+ * @file
+ * Tincan API 5hp functionality.
+ */
+
+/**
+ * Implements hook_js_alter().
+ */
+function tincanapi_h5p_js_alter(&$page) {
+  $module_path = drupal_get_path('module', 'tincanapi_h5p');
+  drupal_add_js($module_path . '/js/tincanapi_h5p.js');
+}

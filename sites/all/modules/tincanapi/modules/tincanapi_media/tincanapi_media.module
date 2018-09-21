@@ -1,0 +1,55 @@
+<?php
+
+/**
+ * @file
+ * A Tin Can API module that contains functions used for media related modules.
+ */
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function tincanapi_media_form_tincanapi_admin_form_alter(&$form, &$form_state, $form_id) {
+  $form['media'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Media'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  );
+
+  $tracking_type_options = array(
+    'youtube' => 'YouTube',
+    'vimeo' => 'Vimeo',
+  );
+
+  $form['media']['tincanapi_media_tracking_types'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Track media type'),
+    '#default_value' => variable_get('tincanapi_media_tracking_types', array()),
+    '#options' => $tracking_type_options,
+  );
+}
+
+/**
+ * Implements hook_init().
+ */
+function tincanapi_media_init() {
+  $media_tracking_types = variable_get('tincanapi_media_tracking_types', array());
+
+  $options = [];
+  foreach ($media_tracking_types as $type => $enabled) {
+    if ($enabled) {
+      $options[] = $type;
+    }
+  }
+
+  // Add the media_tracking_types setting to let the SDK know what to track and what not.
+  drupal_add_js(
+    array(
+      'tincanapi' => array(
+        'settings' => array(
+          'media_tracking_types' => $options,
+        ),
+      ),
+    ), 'setting'
+  );
+}

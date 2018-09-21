@@ -1,0 +1,15 @@
+name = Tin Can API
+description = Provides integration with the Tin Can API.
+package = Tin Can API
+configure = admin/config/services/tincanapi
+
+core = 7.x
+
+dependencies[] = libraries
+
+; Information added by Drupal.org packaging script on 2017-01-17
+version = "7.x-2.0-alpha3"
+core = "7.x"
+project = "tincanapi"
+datestamp = "1484641987"
+

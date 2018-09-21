@@ -1,0 +1,64 @@
+before_script:
+    - composer require phplint/phplint
+    - composer require squizlabs/php_codesniffer
+    - composer require sebastian/phpcpd
+    - composer require sebastian/phpdcd
+    - composer require pdepend/pdepend
+    - composer require phploc/phploc
+    - composer require phpmd/phpmd
+    - composer require drupal/coder
+
+test:
+    image: bobey/docker-gitlab-ci-runner-php5.6
+    script:
+        - echo "Syntax checking PHP files"
+        - echo "For more information http://www.icosaedro.it/phplint/"
+        - vendor/bin/phplint ./ --exclude "vendor"
+
+        - echo "Check the PHP Standard Recommendation 2 - PSR2 coding standards"
+        - echo "For more information http://www.php-fig.org/psr/psr-2/"
+        - vendor/bin/phpcs --config-set installed_paths vendor/drupal/coder/coder_sniffer
+        - vendor/bin/phpcs --standard=Drupal --extensions=php,module,inc,install,test,profile,theme --colors --ignore=*/vendor/* ./ --runtime-set ignore_warnings_on_exit true
+
+additional_tests:
+    image: bobey/docker-gitlab-ci-runner-php5.6
+    script:
+        - set +e        
+
+        - echo "Automatically fix coding standards"
+        - echo "For more information https://github.com/sebastianbergmann/phpcbf"
+        - vendor/bin/phpcs --config-set installed_paths vendor/drupal/coder/coder_sniffer
+        - vendor/bin/phpcbf --standard=Drupal --ignore=vendor ./ --extensions=php,module,inc,install,test,profile,theme
+
+        - echo "Performs the Copy/Paste Detector (CPD) for PHP code"
+        - echo "For more information https://github.com/sebastianbergmann/phpcpd"
+        - vendor/bin/phpcpd --exclude vendor ./ --names ["*.php","*.module","*.inc","*.install","*.profile","*.theme"]
+
+        - echo "Performs the Dead Code Detector (DCD) for PHP code"
+        - echo "For more information https://github.com/sebastianbergmann/phpdcd"
+        - vendor/bin/phpdcd --exclude=vendor ./ --names ["*.php","*.module","*.inc","*.install","*.profile","*.theme"]
+
+        - echo "Automatically performs the static code analysis"
+        - echo "For more information http://pdepend.org/documentation/what-is-php-depend.html"
+        - mkdir -p docs/pdepend
+        - vendor/bin/pdepend --summary-xml=docs/pdepend/summary.xml \
+                             --jdepend-chart=docs/pdepend/chart.svg \
+                             --overview-pyramid=docs/pdepend/pyramid.svg \
+                             --ignore=vendor \
+                             --suffix=php,module,inc,install,profile,theme .
+
+        - echo "Measuring the size and analyzing the structure of this project"
+        - echo "For more information https://github.com/sebastianbergmann/phploc"
+        - vendor/bin/phploc --progress --count-tests --exclude=vendor --names "*.php","*.module","*.inc","*.install","*.profile","*.theme" ./
+
+        - echo "Checking PHP source code for potential problems"
+        - echo "For more information http://phpmd.org/"
+        - vendor/bin/phpmd . html codesize,unusedcode,naming,design,cleancode,controversial \
+                           --reportfile docs/phpmd.html
+                           --exclude vendor
+                           --suffixes php,module,inc,install,profile,theme
+    allow_failure: true
+    artifacts:
+        paths:
+            - docs
+
