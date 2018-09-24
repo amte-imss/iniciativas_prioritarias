@@ -1,0 +1,13 @@
+name = imss ws
+
+description = Modulo para consultar el estatus de un usuario en SIED
+
+core = 7.x
+
+package = tools
+
+php = 5.3
+
+version = 1.0.0
+
+accion = edit

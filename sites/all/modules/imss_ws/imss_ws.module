@@ -1,0 +1,297 @@
+<?php
+
+//private $data_siap = ['nombre'=>'field_nombre', 'ape_paterno'=>'field_apellido_paterno',
+//    'ape_materno'=>'ape_materno',//Apellido materno
+//    'emp_recurp'=>'emp_recurp',
+//    'emp_keypue'=>'clave_categoria',//Clave de categoria
+//    'pue_despue'=>'categoria',//Categoria
+//    'delegacion'=>'delegacion',
+//    'matricula'=>'matricula',
+//    'fecha_ingreso'=>'fecha_ingreso',//Fecha de ingreso al imss
+//    'sexo'=>'sexo',//Sexo
+//    'adscripcion'=>''//Clave de anscripción 
+//    'descripcion'=>''//NOmbre de la andscripción
+//    'descripcion'=>'fecha_ingreso'//Fecha de ingreso
+//    ];
+
+/**
+ * @param $delegacion
+ * @param $matricula
+ * @return bool|SimpleXMLElement
+ */
+/*Funciona que nos permite el cosumo del WS SIAP*/
+function searchUserSIAP($delegacion, $matricula) {
+
+  $params = [
+    'Delegacion' => $delegacion,
+    'Matricula' => $matricula,
+    'RFC' => ''
+  ];
+
+  $client = new SoapClient("http://172.26.18.156/ServiciosWeb/wsSIED.asmx?WSDL");
+  $siapResult = $client->__soapCall("ConsultaSIED", [$params]);
+  $result = simplexml_load_string($siapResult->ConsultaSIEDResult->any);
+
+  return isset($result->EMPLEADOS) ? $result->EMPLEADOS : false;
+}
+
+function pr($param){
+	$result = print_r($param, true);
+	echo '<pre>' . $result . '</pre>';
+}
+
+/**
+ * @param type $name username o matrícula del usuario
+ */
+
+function get_employee_database($username = null){
+    $data = db_query("SELECT * FROM {employees} WHERE matricula = :matricula", [':matricula' => $username])->fetchAssoc();
+    return $data;
+ }
+
+/**
+ * @param $form
+ * @param $form_state
+ */
+
+function imss_ws_form_validate($form, &$form_state) {
+//  $result = _profile_get_fields($form['#user_category'], $form['#user_category'] == 'register');
+//  pr($form_state);
+  $delegacion = $form['delegacion']['#value'];
+
+  $matricula = null;
+  pr('$field');
+//  pr("$result");
+  if ($form['#form_id'] === 'user_register_form') {
+    $matricula = $form['account']['name']['#value'];
+    $data = array('name'=>$form['account']['name']['required'], 'mail'=>$form['account']['mail']['required'], 'delegacion' => $form['delegacion']['required']);
+	$mail = $form['account']['mail']['#value'];
+  } else if ($form['#form_id'] === 'user_login_block') {
+    $matricula = $form['name']['#value'];
+    $data = array('name'=>$form['name']['required'], 'mail'=>$form['mail']['required'], 'delegacion' => $form['delegacion']['required']);
+	  $mail = $form['mail']['#value'];
+  } else {
+     $matricula = null;
+	   $mail = null;
+     $data = null;
+  }
+
+  /*$exists = db_query("SELECT * FROM {employees} WHERE delegacion = :delegacion AND matricula = :matricula", [
+    ':delegacion' => $delegacion,
+    ':matricula' => $matricula
+  ])->fetchAssoc();*/
+  $exists = db_query("SELECT * FROM {employees} WHERE matricula = :matricula", [
+    ':matricula' => $matricula
+  ])->fetchAssoc();
+	//pr($form_state);
+	//pr('<br>existe ');
+	//pr($exists);
+  if(!is_null($matricula) && !empty($matricula)){
+	  if ($form['#form_id'] === 'user_register_form' && !empty($exists)) {
+		    form_set_error('delegacion', t("El usuario  $matricula ya se encuentra registrado."));
+	  } else {
+		$employee = searchUserSIAP($delegacion, $matricula);//Busca al usuario en SIAP
+  		if (!empty($employee) && is_object($employee)) {//SI lo encuentra, intentara guardar la información
+  			$result = db_insert("employees")->fields([
+  			  'matricula' => $matricula,
+  			  'delegacion' => $delegacion,
+  			  'nombre' => $employee->NOMBRE,
+  			  'ape_paterno' => $employee->APE_PATERNO,
+  			  'ape_materno' => $employee->APE_MATERNO,
+  			  'emp_regims' => $employee->EMP_REGIMS,
+  			  'emp_recurp' => $employee->EMP_RECURP,
+  			  'emp_keypue' => $employee->EMP_KEYPUE,
+  			  'pue_despue' => $employee->PUE_DESPUE,
+  			  'emp_status' => $employee->EMP_STATUS,
+  			  'rfc' => $employee->RFC,
+  			  'sexo' => $employee->SEXO,
+  			  'fecha_ingreso' => DateTime::createFromFormat("d/m/Y", $employee->FECHAINGRESO)->format("Y-m-d"),
+  			  'antiguedad' => $employee->ANTIGUEDAD,
+  			  'adscripcion' => $employee->ADSCRIPCION,
+  			  'descripcion' => $employee->DESCRIPCION,
+  			  'correo' => $employee->CORREO,
+  			  'created_at' => date('Y-m-d H:i:s')
+  			])->execute();
+  			//pr($result);
+  		}else{//Si no encuentra al usuario o empleado en SIAP, enviará un mensaje
+  			form_set_error('delegacion', t("Lo sentimos, no se encontro información del usuario $matricula con la delegación ingresada."));
+  		}
+    }
+  }
+}
+
+/**
+ * @param array $data
+ * @return array
+ */
+function parseValues($data = []) {
+  $items = [];
+  foreach($data as $item) {
+    $items[$item->clave] = $item->nombre;
+  }
+	//pr($items);
+  return $items;
+}
+
+/**
+ * Implements hook_form_alter()
+ * @param $form
+ * @param $form_state
+ * @param $form_id
+ * @return mixed
+ */
+
+function imss_ws_form_alter(&$form, &$form_state, $form_id) {
+      pr(variable_get('profile_block_author_fields', array()));
+      pr($form_id);
+  if ($form_id === 'user_login_block' || $form_id === 'user_register_form') {
+      $resultDelegaciones = db_query("SELECT clave,nombre FROM {delegaciones}")->fetchAllAssoc('clave');
+      if (!$resultDelegaciones) {
+        $resultDelegaciones = [];
+      }
+      //$form['account']['name']['#title'] = "Matrícula";
+      $form['delegacion_options'] = [
+        '#type' => 'value',
+        '#value' => parseValues($resultDelegaciones)
+      ];
+      $form['delegacion'] = [
+        '#type' => 'select',
+        '#title' => t('delegacion'),
+        '#description' => t('Delegación a la que se encuentra adscrita'),
+        '#required' => FALSE,
+        '#sorted' => 1,
+        '#options' => $form['delegacion_options']['#value']
+      ];
+//      $form['#validate'][] = 'imss_ws_form_validate';
+  }else if($form_id === 'user_profile_form'){//Información del registro y edicion de cuenta 
+      load_data_account($form, $form_state, $form_id);
+  }
+
+  return $form;
+}
+
+
+
+function load_data_account(&$form, &$form_state, $form_id) {
+    
+    $userdata = &$form['#user'];
+    
+    pr($userdata);
+//    pr($form_state);
+    $result_data = get_employee_database($form['#user']->name);
+    if(empty($result_data)){//Ver carga de información de la base de datos de empleado
+        
+        
+    }
+    pr($result_data);
+}
+
+function imss_ws_schema() {
+  $schema['employees'] = [
+    'description' => t('Stores employees data.'),
+    'fields' => [
+      'eid' => [
+        'type' => 'serial',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'description' => "The primary key",
+      ],
+      'nombre' => [
+        'description' => 'El nombre del empleado.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'ape_paterno' => [
+        'description' => 'Apellido paterno del empleado.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'ape_materno' => [
+        'description' => 'Apellido materno del empleado.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'emp_regims' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'emp_recurp' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'emp_keypue' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'pue_despue' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'emp_status' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'delegacion' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'matricula' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'rfc' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'sexo' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'fecha_ingreso' => [
+        'type' => 'varchar',
+        'mysql_type' => 'date',
+        'not null' => false
+      ],
+      'antiguedad' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'adscripcion' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'descripcion' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'correo' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => false
+      ],
+      'created_at' => [
+        'type' => 'varchar',
+        'mysql_type' => 'datetime',
+        'not null' => true
+      ]
+    ],
+    'primary key' => ['eid'],
+  ];
+
+  return $schema;
+}
