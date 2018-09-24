@@ -1,0 +1,60 @@
+name = 'iniciativas'
+description = Uses the Bootstrap Framework Less source files and must be compiled (not for beginners).
+core = 7.x
+base theme = bootstrap
+php = 5.3.0
+
+
+;;;;;;;;;;;;;;;;;;;;;
+;; Regions
+;;;;;;;;;;;;;;;;;;;;;
+
+regions[navigation]     = 'Navigation'
+regions[header]         = 'Top Bar'
+regions[highlighted]    = 'Highlighted'
+regions[help]           = 'Help'
+regions[content]        = 'Content'
+regions[sidebar_first]  = 'Primary'
+regions[sidebar_second] = 'Secondary'
+regions[footer]         = 'Footer'
+regions[page_top]       = 'Page top'
+regions[page_bottom]    = 'Page bottom'
+
+
+;;;;;;;;;;;;;;;;;;;;;
+;; Stylesheets
+;;;;;;;;;;;;;;;;;;;;;
+stylesheets[all][] = bootstrap/css/bootstrap.css
+stylesheets[all][] = css/style.css
+;stylesheets[all][] = font-awesome-4.1.0/css/font-awesome.css
+
+
+;;;;;;;;;;;;;;;;;;;;;
+;; Scripts
+;;;;;;;;;;;;;;;;;;;;;
+
+scripts[] = 'bootstrap/js/analytics.js'
+scripts[] = 'bootstrap/js/affix.js'
+scripts[] = 'bootstrap/js/alert.js'
+scripts[] = 'bootstrap/js/jquery.appear.js'
+scripts[] = 'bootstrap/js/button.js'
+scripts[] = 'bootstrap/js/carousel.js'
+scripts[] = 'bootstrap/js/collapse.js'
+scripts[] = 'bootstrap/js/dropdown.js'
+scripts[] = 'bootstrap/js/modal.js'
+scripts[] = 'bootstrap/js/tooltip.js'
+scripts[] = 'bootstrap/js/popover.js'
+scripts[] = 'bootstrap/js/scrollspy.js'
+scripts[] = 'bootstrap/js/tab.js'
+scripts[] = 'bootstrap/js/transition.js'
+;scripts[] = 'bootstrap/js/jquery.scrollTo.min.js'
+scripts[] = 'bootstrap/js/jquery.localScroll.js'
+;scripts[] = 'bootstrap/js/jquery.nicescroll.js'
+scripts[] = 'bootstrap/js/modernizr.js'
+scripts[] = 'bootstrap/js/skrollr.js'
+scripts[] = 'bootstrap/js/jquery.countdown.js'
+scripts[] = 'bootstrap/js/main.js'
+scripts[] = 'bootstrap/js/bootstrap-submenu.min.js'
+
+; Disable the CDN provider so compiled source files can be used.
+settings[bootstrap_cdn] = ''
