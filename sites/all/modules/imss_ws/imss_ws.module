@@ -44,8 +44,13 @@ function pr($param){
  * @param type $name username o matrícula del usuario
  */
 
-function get_employee_database($username = null){
-    $data = db_query("SELECT * FROM {employees} WHERE matricula = :matricula", [':matricula' => $username])->fetchAssoc();
+function get_employee_database($username = null, $delegacion = null){
+    if(is_null($delegacion)){
+        $data = db_query("SELECT * FROM {employees} WHERE matricula = :matricula", [':matricula' => $username])->fetchAssoc();
+    }else{
+        $data = db_query("SELECT * FROM {employees} WHERE matricula = :matricula and delegacion = :delegacion", [':matricula' => $username, ':delegacion' => $delegacion])->fetchAssoc();
+    }    
+//    pr($data);
     return $data;
  }
 
@@ -54,71 +59,90 @@ function get_employee_database($username = null){
  * @param $form_state
  */
 
-function imss_ws_form_validate($form, &$form_state) {
-//  $result = _profile_get_fields($form['#user_category'], $form['#user_category'] == 'register');
-//  pr($form_state);
+function imss_ws_form_validate(&$form, &$form_state) {
+  $errors = form_get_errors();
   $delegacion = $form['delegacion']['#value'];
-
   $matricula = null;
-  pr('$field');
-//  pr("$result");
-  if ($form['#form_id'] === 'user_register_form') {
-    $matricula = $form['account']['name']['#value'];
-    $data = array('name'=>$form['account']['name']['required'], 'mail'=>$form['account']['mail']['required'], 'delegacion' => $form['delegacion']['required']);
+  switch ($form['#form_id']){
+      case 'user_register_form'://Valida en el registro de nuevo usuario
+        $matricula = $form['account']['name']['#value'];
 	$mail = $form['account']['mail']['#value'];
-  } else if ($form['#form_id'] === 'user_login_block') {
-    $matricula = $form['name']['#value'];
-    $data = array('name'=>$form['name']['required'], 'mail'=>$form['mail']['required'], 'delegacion' => $form['delegacion']['required']);
-	  $mail = $form['mail']['#value'];
-  } else {
-     $matricula = null;
-	   $mail = null;
-     $data = null;
-  }
-
-  /*$exists = db_query("SELECT * FROM {employees} WHERE delegacion = :delegacion AND matricula = :matricula", [
-    ':delegacion' => $delegacion,
-    ':matricula' => $matricula
-  ])->fetchAssoc();*/
-  $exists = db_query("SELECT * FROM {employees} WHERE matricula = :matricula", [
-    ':matricula' => $matricula
-  ])->fetchAssoc();
-	//pr($form_state);
-	//pr('<br>existe ');
-	//pr($exists);
-  if(!is_null($matricula) && !empty($matricula)){
-	  if ($form['#form_id'] === 'user_register_form' && !empty($exists)) {
-		    form_set_error('delegacion', t("El usuario  $matricula ya se encuentra registrado."));
-	  } else {
-		$employee = searchUserSIAP($delegacion, $matricula);//Busca al usuario en SIAP
-  		if (!empty($employee) && is_object($employee)) {//SI lo encuentra, intentara guardar la información
-  			$result = db_insert("employees")->fields([
-  			  'matricula' => $matricula,
-  			  'delegacion' => $delegacion,
-  			  'nombre' => $employee->NOMBRE,
-  			  'ape_paterno' => $employee->APE_PATERNO,
-  			  'ape_materno' => $employee->APE_MATERNO,
-  			  'emp_regims' => $employee->EMP_REGIMS,
-  			  'emp_recurp' => $employee->EMP_RECURP,
-  			  'emp_keypue' => $employee->EMP_KEYPUE,
-  			  'pue_despue' => $employee->PUE_DESPUE,
-  			  'emp_status' => $employee->EMP_STATUS,
-  			  'rfc' => $employee->RFC,
-  			  'sexo' => $employee->SEXO,
-  			  'fecha_ingreso' => DateTime::createFromFormat("d/m/Y", $employee->FECHAINGRESO)->format("Y-m-d"),
-  			  'antiguedad' => $employee->ANTIGUEDAD,
-  			  'adscripcion' => $employee->ADSCRIPCION,
-  			  'descripcion' => $employee->DESCRIPCION,
-  			  'correo' => $employee->CORREO,
-  			  'created_at' => date('Y-m-d H:i:s')
-  			])->execute();
-  			//pr($result);
-  		}else{//Si no encuentra al usuario o empleado en SIAP, enviará un mensaje
-  			form_set_error('delegacion', t("Lo sentimos, no se encontro información del usuario $matricula con la delegación ingresada."));
-  		}
-    }
+        if(empty($errors)){//Valida que no existan errores antes de la delegacion, es decir, "name" y "email"
+            valida_usuario_registro($matricula, $delegacion, $form);
+        }
+          break;
+      case 'user_login_block'://Valida en el login
+      case 'user_login'://Valida en el login
+        $matricula = $form['name']['#value'];
+	$mail = $form['mail']['#value'];
+        if(empty($errors)){//Valida que no existan errores antes de la delegacion, es decir, "name" y "email"
+            valida_usuario_sesion($matricula, $delegacion, $form);
+        }
+          break;
+      default :
+        $matricula = null;
+	$mail = null;
+        $data = null;
+        return 0;
   }
 }
+
+/**
+ * datos de inicio de sesion
+ */
+function valida_usuario_sesion($matricula, $delegacion = "", &$form) {
+//    switch ($delegacion){
+////      case '001'://Valida usuario externo
+////          break;
+////      case ''://No selecciono delegación
+////          break;
+//      default ://Cualquier delegación
+//  }
+      $empleado = get_employee_database($matricula, $delegacion);
+      if(empty($empleado)){//existe el usuario
+          form_set_error('delegacion', t("Lo sentimos, no se encontro información del usuario $matricula con la delegación ingresada."));
+      }
+}
+
+/**
+ * Proceso de guardado o de registro del usuario
+ */
+function valida_usuario_registro($matricula, $delegacion = "", &$form) {
+    switch ($delegacion){
+      case '001'://Valida usuario externo
+          break;
+      case ''://No selecciono delegación
+          break;
+      default ://Cualquier delegación diferente a las opciones anteriores 
+        $empleado = get_employee_database($matricula);
+        $employee = searchUserSIAP($delegacion, $matricula);//Busca al usuario en SIAP
+        if (!empty($employee) && is_object($employee)) {//SI lo encuentra, intentara guardar la información
+                $result = db_insert("employees")->fields([
+                  'matricula' => $matricula,
+                  'delegacion' => $delegacion,
+                  'nombre' => $employee->NOMBRE,
+                  'ape_paterno' => $employee->APE_PATERNO,
+                  'ape_materno' => $employee->APE_MATERNO,
+                  'emp_regims' => $employee->EMP_REGIMS,
+                  'emp_recurp' => $employee->EMP_RECURP,
+                  'emp_keypue' => $employee->EMP_KEYPUE,
+                  'pue_despue' => $employee->PUE_DESPUE,
+                  'emp_status' => $employee->EMP_STATUS,
+                  'rfc' => $employee->RFC,
+                  'sexo' => $employee->SEXO,
+                  'fecha_ingreso' => DateTime::createFromFormat("d/m/Y", $employee->FECHAINGRESO)->format("Y-m-d"),
+                  'antiguedad' => $employee->ANTIGUEDAD,
+                  'adscripcion' => $employee->ADSCRIPCION,
+                  'descripcion' => $employee->DESCRIPCION,
+                  'correo' => $employee->CORREO,
+                  'created_at' => date('Y-m-d H:i:s')
+                ])->execute();
+        }else{
+            form_set_error('delegacion', t("Lo sentimos, no se encontro información del usuario $matricula con la delegación ingresada."));
+        }
+    }
+}
+
 
 /**
  * @param array $data
@@ -134,6 +158,38 @@ function parseValues($data = []) {
 }
 
 /**
+ * Modifica Información de la vista de información del usuario
+ */
+function imss_ws_user_view($account) {
+    $result_data = get_employee_database($account->name);
+    if(is_array($result_data)  && !empty($result_data)){//Valida que exista información
+        $data_siap = get_field_structure();
+        foreach ($data_siap as $key => $val) {
+            $value = $val['field_drupal'];
+            $label = $val['label'][LANGUAGE_TYPE_INTERFACE][$account->{LANGUAGE_TYPE_INTERFACE}];
+            if(!isset($account->content[$value])){
+                $account->content[$value]['#title']= $label;
+                $account->content[$value]['#field_name']= $value;
+                $account->content[$value]['#theme']= 'field';
+                $account->content[$value]['#items'][]= [];
+                $account->content[$value][0]['#markup']= $result_data[$key];
+                //No necesarias para que aparezca la información
+        //        $account->content[$value]['#weight']= 0;
+        //        $account->content[$value]['#access']= 1;
+        //        $account->content[$value]['#language']= $account->{LANGUAGE_TYPE_INTERFACE};
+        //        $account->content[$value]['#field_type']= 'text';
+        //        $account->content[$value]['#formatter']= 'text_default';
+        //        $account->content[$value]['#view_mode']= 'full';
+        //        $account->content[$value]['#label_display']= 'above';
+        //        $account->content[$value]['#entity_type']= 'user';
+        //        $account->content[$value]['#bundle']= 'user';
+        //        $account->content[$value]['#field_translatable']= 1;
+            }
+        }
+    }
+}
+
+/**
  * Implements hook_form_alter()
  * @param $form
  * @param $form_state
@@ -142,48 +198,100 @@ function parseValues($data = []) {
  */
 
 function imss_ws_form_alter(&$form, &$form_state, $form_id) {
-      pr(variable_get('profile_block_author_fields', array()));
-      pr($form_id);
-  if ($form_id === 'user_login_block' || $form_id === 'user_register_form') {
-      $resultDelegaciones = db_query("SELECT clave,nombre FROM {delegaciones}")->fetchAllAssoc('clave');
-      if (!$resultDelegaciones) {
-        $resultDelegaciones = [];
-      }
-      //$form['account']['name']['#title'] = "Matrícula";
-      $form['delegacion_options'] = [
-        '#type' => 'value',
-        '#value' => parseValues($resultDelegaciones)
-      ];
-      $form['delegacion'] = [
-        '#type' => 'select',
-        '#title' => t('delegacion'),
-        '#description' => t('Delegación a la que se encuentra adscrita'),
-        '#required' => FALSE,
-        '#sorted' => 1,
-        '#options' => $form['delegacion_options']['#value']
-      ];
-//      $form['#validate'][] = 'imss_ws_form_validate';
-  }else if($form_id === 'user_profile_form'){//Información del registro y edicion de cuenta 
-      load_data_account($form, $form_state, $form_id);
-  }
+  $input_delegacion = $form_state['input']['delegacion'];
+  switch ($form_id){
+      case 'user_login_block':
+      case 'user_login':
+          $resultDelegaciones = db_query("SELECT clave,nombre FROM {delegaciones}")->fetchAllAssoc('clave');
+        if (!$resultDelegaciones) {
+          $resultDelegaciones = [];
+        }
+        //$form['account']['name']['#title'] = "Matrícula";
+        $form['delegacion_options'] = [
+          '#type' => 'value',
+          '#value' => parseValues($resultDelegaciones)
+        ];
 
+        $form['delegacion'] = [
+          '#type' => 'select',
+          '#title' => t('Delegación'),
+          '#description' => t('Delegación a la que se encuentra adscrita'),
+          '#required' => true,
+          '#sorted' => 1,
+          '#options' => $form['delegacion_options']['#value']
+        ];
+        $form['#validate'][] = 'imss_ws_form_validate';
+        $empleado = get_employee_database($form_state['input']['name']);
+//        pr($empleado);
+//        pr($input_delegacion);
+        if($input_delegacion == '001' && empty($empleado)){//Elimina validación de la delegacion
+//            pr('entro');
+            $form['delegacion']['#required'] = false;
+            $encontro = array_keys($form['#validate'], 'imss_ws_form_validate');
+            if(!empty($encontro)){
+                unset($form['#validate'][$encontro[0]]);//Elimina la balidacion`para las condiciones
+            }
+        }
+          break;
+      case 'user_register_form':
+        $resultDelegaciones = db_query("SELECT clave,nombre FROM {delegaciones}")->fetchAllAssoc('clave');
+        if (!$resultDelegaciones) {
+          $resultDelegaciones = [];
+        }
+        //$form['account']['name']['#title'] = "Matrícula";
+        $form['delegacion_options'] = [
+          '#type' => 'value',
+          '#value' => parseValues($resultDelegaciones)
+        ];
+
+        $form['delegacion'] = [
+          '#type' => 'select',
+          '#title' => t('Delegación'),
+          '#description' => t('Delegación a la que se encuentra adscrita'),
+          '#required' => true,
+          '#sorted' => 1,
+          '#options' => $form['delegacion_options']['#value']
+        ];
+        if($input_delegacion != '001'){//Elimina validación de la delegacion
+            $form['delegacion']['#required'] = false;
+            $form['#validate'][] = 'imss_ws_form_validate';
+        }
+      break;
+      case 'user_profile_form':
+        load_data_account($form, $form_state, $form_id);
+      break;
+  }
   return $form;
 }
 
+function  get_field_structure(){//Estructura de relación entre tabla empleados y nombre de los campos del formulario de perfil
+   return [
+           'nombre'=>['field_drupal'=>'field_nombre','label'=>['language' => ['es' => 'Nombre','und' => 'Nombre']]], 
+           'ape_paterno'=>['field_drupal'=>'field_apallido_paterno', 'label' => ['language'=>['es' => 'Apellido paterno', 'und' => 'Apellido paterno']]],
+           'ape_materno'=>['field_drupal'=>'field_apellido_materno', 'label' => ['language'=>['es' => 'Apellido materno', 'und' => 'Apellido materno']]],
+           'matricula'=>['field_drupal'=>'field_matr_cula', 'label' => ['language'=>['es' => 'Matrícula', 'und' => 'Matrícula']]],
+           'emp_keypue'=>['field_drupal'=>'field_clave_categoria', 'label' => ['language'=>['es' => 'Clave de categoría', 'und' => 'Clave de categoría']]],
+           'pue_despue'=>['field_drupal'=>'field_categoria', 'label' => ['language'=>['es' => 'Categoría', 'und' => 'Categoría']]],
+           'adscripcion'=>['field_drupal'=>'field_clave_adscripcion', 'label' => ['language'=>['es' => 'Clave de adscripción', 'und' => 'Clave de adscripción']]],
+           'descripcion'=>['field_drupal'=>'field_field_adscripcion', 'label' => ['language'=>['es' => 'Adscripción', 'und' => 'Adscripción']]],
+           'sexo'=>['field_drupal'=>'field_sexo', 'label' => ['language'=>['es' => 'Sexo', 'und' => 'Sexo']]],
+           'fecha_ingreso'=>['field_drupal'=>'field_fecha_ingreso', 'label' => ['language'=>['es' => 'Fecha de ingreso', 'und' => 'Fecha de ingreso']]],
+    ];
+}
 
-
+/**
+ * Modifica o agrga el texto de los campos de la tabla employee en el 
+ * formulario de edición de la cuenta o perfil
+ */
 function load_data_account(&$form, &$form_state, $form_id) {
-    
-    $userdata = &$form['#user'];
-    
-    pr($userdata);
-//    pr($form_state);
+    $data_siap = get_field_structure();
     $result_data = get_employee_database($form['#user']->name);
-    if(empty($result_data)){//Ver carga de información de la base de datos de empleado
-        
-        
+    if(!empty($result_data)){//Ver carga de información de la base de datos de empleado
+        foreach ($data_siap as $key => $val) {
+                $value = $val['field_drupal'];
+                $form[$value][$form[$value]['#'.LANGUAGE_TYPE_INTERFACE]][0]['value']['#default_value'] = $result_data[$key];//Modifica el texto default del componente
+        }
     }
-    pr($result_data);
 }
 
 function imss_ws_schema() {
